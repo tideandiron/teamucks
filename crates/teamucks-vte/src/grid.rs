@@ -1,6 +1,6 @@
 use unicode_width::UnicodeWidthChar;
 
-use crate::{cell::Cell, modes::ModeFlags, row::Row, style::PackedStyle};
+use crate::{cell::Cell, modes::ModeFlags, row::Row, style::PackedStyle, tabstops::TabStops};
 
 // ---------------------------------------------------------------------------
 // Alternate screen
@@ -105,6 +105,11 @@ pub struct Grid {
     /// primary screen.  We use `Box` so that the `None` case (the common
     /// path) adds only a pointer word to `Grid`'s size.
     alternate: Option<Box<AlternateState>>,
+    /// Configurable tab stops.
+    ///
+    /// Defaults to stops every 8 columns.  Modified by HTS (ESC H) and
+    /// TBC (CSI g).
+    pub(crate) tabs: TabStops,
 }
 
 impl Grid {
@@ -133,6 +138,7 @@ impl Grid {
             scroll_region: (0, rows - 1),
             modes,
             alternate: None,
+            tabs: TabStops::new(cols),
         }
     }
 
@@ -311,6 +317,9 @@ impl Grid {
 
         // Resize resets the scroll region to the full new screen.
         self.scroll_region = (0, rows - 1);
+
+        // Resize the tab stops to match the new column count.
+        self.tabs.resize(cols);
 
         // When the alternate screen is active, also resize the saved primary
         // screen so that exiting the alternate screen restores consistent

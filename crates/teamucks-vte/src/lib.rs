@@ -16,16 +16,21 @@
 //! - [`params`] — CSI/DCS parameter accumulator used internally by the parser.
 
 pub mod cell;
+pub mod charsets;
 pub mod grid;
 pub mod modes;
 pub mod params;
 pub mod parser;
 pub mod row;
 pub mod style;
+pub mod tabstops;
 pub mod terminal;
+
+#[cfg(test)]
+mod alternate_screen_tests;
 
 #[cfg(test)]
 mod modes_tests;
 
 #[cfg(test)]
-mod alternate_screen_tests;
+mod tabs_charsets_mouse_tests;

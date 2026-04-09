@@ -16,6 +16,7 @@
 //!   independently, satisfying the borrow checker.
 
 use crate::{
+    charsets::{dec_special_graphics, Charset},
     grid::Grid,
     modes::ModeFlags,
     parser::{Parser, Performer},
@@ -50,6 +51,14 @@ pub(crate) struct TerminalState {
     grid: Grid,
     title: String,
     modes: ModeFlags,
+    /// G0 character set designation (selected by ESC ( designator).
+    charset_g0: Charset,
+    /// G1 character set designation (selected by ESC ) designator).
+    charset_g1: Charset,
+    /// Which character set is currently active: 0 = G0, 1 = G1.
+    ///
+    /// Switched by SI (0x0F → 0) and SO (0x0E → 1).
+    active_charset: usize,
 }
 
 impl TerminalState {
@@ -58,7 +67,23 @@ impl TerminalState {
         // Grid::new initialises modes to ModeFlags::default_modes().  Mirror
         // that into TerminalState so both are always in sync.
         let modes = grid.modes();
-        Self { grid, title: String::new(), modes }
+        Self {
+            grid,
+            title: String::new(),
+            modes,
+            charset_g0: Charset::Ascii,
+            charset_g1: Charset::Ascii,
+            active_charset: 0,
+        }
+    }
+
+    /// Return the currently active [`Charset`] (G0 or G1 depending on SO/SI).
+    fn active_charset(&self) -> Charset {
+        if self.active_charset == 0 {
+            self.charset_g0
+        } else {
+            self.charset_g1
+        }
     }
 
     /// Handle SGR (Select Graphic Rendition) — CSI … m.
@@ -460,7 +485,23 @@ impl TerminalState {
 
 impl Performer for TerminalState {
     fn print(&mut self, c: char) {
-        self.grid.write_char(c);
+        // When the active character set is DEC Special Graphics, remap bytes
+        // in the special-graphics range before writing to the grid.  Only
+        // single-byte ASCII characters (U+0020–U+007E) can be remapped; multi-
+        // byte Unicode code points are always passed through unchanged.
+        let output = if self.active_charset() == Charset::DecSpecialGraphics {
+            // Cast is safe: u32::MAX > u8::MAX, and u8 values that exceed 0x7F
+            // cannot encode a one-byte char via try_from, so we only convert
+            // chars that genuinely fit in a u8.
+            if let Ok(byte) = u8::try_from(u32::from(c)) {
+                dec_special_graphics(byte).unwrap_or(c)
+            } else {
+                c
+            }
+        } else {
+            c
+        };
+        self.grid.write_char(output);
     }
 
     fn execute(&mut self, byte: u8) {
@@ -474,16 +515,25 @@ impl Performer for TerminalState {
                 }
             }
 
-            // HT — advance to the next tab stop (every 8 columns by default).
+            // HT — advance to the next tab stop.
+            //
+            // Uses configurable tab stops (default: every 8 columns).  Tab
+            // stops can be set with HTS (ESC H) and cleared with TBC (CSI g).
             0x09 => {
                 let col = self.grid.cursor_col();
                 let row = self.grid.cursor_row();
-                let cols = self.grid.cols();
-                // Next tab stop is at the smallest multiple of 8 that is > col.
-                let next_stop = (col / 8 + 1) * 8;
-                // Clamp to the last column (not past it).
-                let new_col = next_stop.min(cols - 1);
+                let new_col = self.grid.tabs.next_stop(col);
                 self.grid.set_cursor(new_col, row);
+            }
+
+            // SO (Shift Out, 0x0E) — activate G1 character set.
+            0x0E => {
+                self.active_charset = 1;
+            }
+
+            // SI (Shift In, 0x0F) — activate G0 character set.
+            0x0F => {
+                self.active_charset = 0;
             }
 
             // LF / VT / FF — move cursor down one row, scrolling within the
@@ -589,6 +639,65 @@ impl Performer for TerminalState {
                 self.grid.erase_chars(count);
             }
 
+            // CHT — Cursor Forward Tabulation (CSI n I).
+            //
+            // Advances the cursor forward through `n` tab stops.  If fewer
+            // than `n` stops remain before the right edge, the cursor lands at
+            // the last column.
+            b'I' => {
+                let n = param(params, 0, 1) as usize;
+                let row = self.grid.cursor_row();
+                let mut col = self.grid.cursor_col();
+                for _ in 0..n {
+                    let next = self.grid.tabs.next_stop(col);
+                    if next == col {
+                        // Already at the rightmost position — cannot advance.
+                        break;
+                    }
+                    col = next;
+                }
+                self.grid.set_cursor(col, row);
+            }
+
+            // CBT — Cursor Backward Tabulation (CSI n Z).
+            //
+            // Moves the cursor backward through `n` tab stops.  If fewer than
+            // `n` stops remain before the left edge, the cursor lands at col 0.
+            b'Z' => {
+                let n = param(params, 0, 1) as usize;
+                let row = self.grid.cursor_row();
+                let mut col = self.grid.cursor_col();
+                for _ in 0..n {
+                    let prev = self.grid.tabs.prev_stop(col);
+                    if prev == col {
+                        // Already at the leftmost position — cannot go further.
+                        break;
+                    }
+                    col = prev;
+                }
+                self.grid.set_cursor(col, row);
+            }
+
+            // TBC — Tab Clear (CSI n g).
+            //
+            // Clears one or all tab stops:
+            //   0 (or omitted): clear the stop at the current column.
+            //   3: clear all tab stops.
+            //   Other values: silently ignored.
+            b'g' => {
+                let p = params.first().copied().unwrap_or(0);
+                match p {
+                    0 => {
+                        let col = self.grid.cursor_col();
+                        self.grid.tabs.clear(col);
+                    }
+                    3 => {
+                        self.grid.tabs.clear_all();
+                    }
+                    _ => {}
+                }
+            }
+
             // Scroll region sequences (r, S, T) delegated to a helper.
             b'r' | b'S' | b'T' => self.apply_scroll_region(params, action),
 
@@ -597,12 +706,47 @@ impl Performer for TerminalState {
         }
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], action: u8) {
+    fn esc_dispatch(&mut self, intermediates: &[u8], action: u8) {
+        // Character set designation sequences use a single intermediate byte
+        // to identify the target charset slot:
+        //   ESC ( <designator>  → designate G0
+        //   ESC ) <designator>  → designate G1
+        //
+        // Designator bytes:
+        //   b'0' → DEC Special Graphics
+        //   b'B' → ASCII (default)
+        match intermediates.first() {
+            Some(&b'(') => {
+                self.charset_g0 = match action {
+                    b'0' => Charset::DecSpecialGraphics,
+                    // 'B' and all other designators default to ASCII.
+                    _ => Charset::Ascii,
+                };
+                return;
+            }
+            Some(&b')') => {
+                self.charset_g1 = match action {
+                    b'0' => Charset::DecSpecialGraphics,
+                    _ => Charset::Ascii,
+                };
+                return;
+            }
+            _ => {}
+        }
+
         match action {
             // DECSC — Save Cursor (ESC 7).
             b'7' => self.grid.save_cursor(),
             // DECRC — Restore Cursor (ESC 8).
             b'8' => self.grid.restore_cursor(),
+
+            // HTS — Horizontal Tab Set (ESC H).
+            //
+            // Sets a tab stop at the current cursor column.
+            b'H' => {
+                let col = self.grid.cursor_col();
+                self.grid.tabs.set(col);
+            }
 
             // IND — Index (ESC D): move cursor down one line.
             //
@@ -657,6 +801,38 @@ impl Performer for TerminalState {
     fn dcs_dispatch(&mut self, _params: &[u16], _intermediates: &[u8], _action: u8, _data: &[u8]) {
         // DCS sequences are not handled in Feature 4.
     }
+}
+
+// ---------------------------------------------------------------------------
+// Mouse mode
+// ---------------------------------------------------------------------------
+
+/// The current mouse tracking mode, derived from active DECSET flags.
+///
+/// Higher-numbered modes subsume lower ones: `AllMotion` (1003) implies all
+/// `ButtonEvent` (1002) and `Click` (1000) capabilities.  The `mouse_mode()`
+/// method on [`Terminal`] returns the highest-priority active mode.
+///
+/// # Examples
+///
+/// ```
+/// use teamucks_vte::terminal::{MouseMode, Terminal};
+///
+/// let mut t = Terminal::new(80, 24);
+/// assert_eq!(t.mouse_mode(), MouseMode::None);
+/// t.feed(b"\x1b[?1000h");
+/// assert_eq!(t.mouse_mode(), MouseMode::Click);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseMode {
+    /// No mouse reporting active.
+    None,
+    /// Basic click reporting (mode 1000).
+    Click,
+    /// Button-event motion tracking (mode 1002).
+    ButtonEvent,
+    /// All-motion tracking (mode 1003).
+    AllMotion,
 }
 
 // ---------------------------------------------------------------------------
@@ -751,5 +927,37 @@ impl Terminal {
     /// Panics if `cols == 0` or `rows == 0`.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.state.grid.resize(cols, rows);
+    }
+
+    /// Return the current mouse tracking mode.
+    ///
+    /// Derives the mode from the active [`ModeFlags`].  When multiple mouse
+    /// mode flags are set simultaneously, the highest-priority mode is
+    /// returned: `AllMotion` > `ButtonEvent` > `Click` > `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use teamucks_vte::terminal::{MouseMode, Terminal};
+    ///
+    /// let mut t = Terminal::new(80, 24);
+    /// assert_eq!(t.mouse_mode(), MouseMode::None);
+    /// t.feed(b"\x1b[?1000h"); // set mode 1000
+    /// assert_eq!(t.mouse_mode(), MouseMode::Click);
+    /// t.feed(b"\x1b[?1000l"); // reset mode 1000
+    /// assert_eq!(t.mouse_mode(), MouseMode::None);
+    /// ```
+    #[must_use]
+    pub fn mouse_mode(&self) -> MouseMode {
+        let modes = self.state.modes;
+        if modes.contains(ModeFlags::MOUSE_REPORT_ALL) {
+            MouseMode::AllMotion
+        } else if modes.contains(ModeFlags::MOUSE_REPORT_BUTTON) {
+            MouseMode::ButtonEvent
+        } else if modes.contains(ModeFlags::MOUSE_REPORT_CLICK) {
+            MouseMode::Click
+        } else {
+            MouseMode::None
+        }
     }
 }
