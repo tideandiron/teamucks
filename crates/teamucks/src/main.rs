@@ -2,7 +2,10 @@
 #![allow(clippy::module_name_repetitions)]
 
 use clap::Parser;
-use teamucks_core::server::{default_socket_path, Server};
+use teamucks_core::{
+    config::load_config,
+    server::{default_socket_path, Server},
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "teamucks", about = "A modern terminal multiplexer")]
@@ -32,6 +35,14 @@ fn main() {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     tracing::info!(server = %cli.server, "teamucks starting");
+
+    let config = load_config();
+    tracing::info!(
+        prefix = ?config.prefix_key,
+        scrollback = config.scrollback_lines,
+        shell = %config.default_shell,
+        "configuration loaded"
+    );
 
     match cli.command {
         None | Some(Command::StartServer) => {

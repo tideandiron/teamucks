@@ -238,7 +238,16 @@ impl InputStateMachine {
 // ── Default keybinding tables ─────────────────────────────────────────────────
 
 /// Build the default post-prefix keybinding table (vim-style).
-fn default_bindings() -> HashMap<KeyEvent, Command> {
+///
+/// Returns the standard set of post-prefix keybindings used by [`InputStateMachine`]
+/// and the default [`ValidatedConfig`](crate::config::types::ValidatedConfig).
+///
+/// # Panics
+///
+/// Never panics in practice — the digit-to-char conversion is infallible for
+/// values 0–9.
+#[must_use]
+pub fn default_bindings() -> HashMap<KeyEvent, Command> {
     let no_mod = Modifiers::empty();
 
     let mut map = HashMap::new();
@@ -280,7 +289,11 @@ fn default_bindings() -> HashMap<KeyEvent, Command> {
 }
 
 /// Build the resize-mode keybinding table.
-fn default_resize_bindings() -> HashMap<KeyEvent, Command> {
+///
+/// Returns the standard resize-mode keybindings used by [`InputStateMachine`]
+/// and the default [`ValidatedConfig`](crate::config::types::ValidatedConfig).
+#[must_use]
+pub fn default_resize_bindings() -> HashMap<KeyEvent, Command> {
     let no_mod = Modifiers::empty();
 
     let mut map = HashMap::new();

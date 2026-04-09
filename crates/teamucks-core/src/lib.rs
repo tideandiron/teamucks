@@ -5,6 +5,7 @@
 //!
 //! Sessions, windows, panes, layout engine, server daemon, client protocol.
 
+pub mod config;
 pub mod input;
 pub mod layout;
 pub mod pane;
