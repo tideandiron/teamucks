@@ -25,4 +25,5 @@
 
 pub mod command;
 pub mod key;
+pub mod mouse;
 pub mod prefix;
