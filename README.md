@@ -4,16 +4,16 @@ A terminal multiplexer for 2026+. Priorities: correctness > performance > AI-nat
 
 ## Status
 
-**Phase 1 complete: VTE crate feature-complete with 457 tests.** The terminal emulator library now fully parses and renders terminal output with all Priority 1 escape sequences, scrollback, content reflow, and property tests. Next: multiplexer infrastructure (Phase 2).
+**Phase 1 complete: All 23 features merged. 905 tests.** The foundation is built: terminal emulator (teamucks-vte) with full VTE parsing and rendering, multiplexer infrastructure (teamucks-core) with PTY management, server daemon, layout engine, and client protocol. Components are feature-complete and well-tested. Integration into a running multiplexer binary is Phase 2.
 
 ## Architecture
 
 The workspace consists of four Rust crates:
 
-- **teamucks-vte** — Complete terminal emulator library. Parses terminal byte streams using a Paul Flo Williams state machine (UTF-8, CSI, ESC, OSC, DCS), renders to a grid with full SGR support (all attributes, 16/256/24-bit colors), handles all Priority 1 escape sequences (cursor, erase, scroll regions, modes, alternate screen, tabs, charsets), manages scrollback with configurable capacity, and reflows content on resize. 457 tests, property tests, fuzz targets. Zero unsafe code. Publishing to crates.io.
-- **teamucks-proto** — Protobuf API definitions for the content inspection interface. Stubbed.
-- **teamucks-core** — Domain model, server, layout engine, and rendering logic.
-- **teamucks** — Single binary that embeds server and client.
+- **teamucks-vte** — Complete terminal emulator library. Paul Flo Williams state machine (UTF-8, CSI, ESC, OSC, DCS). Full SGR (all attributes, 16/256/24-bit colors). All Priority 1 escape sequences (cursor, erase, scroll regions, modes, alternate screen, tabs, charsets). Scrollback with reflow on resize. 457 tests, property tests, fuzz targets. Zero unsafe code.
+- **teamucks-proto** — Protobuf API for content inspection over unix socket. Foundation for AI-native interfaces.
+- **teamucks-core** — Multiplexer infrastructure: PTY management, server daemon, binary client protocol, async codec, pane entity with frame diff, input handling (prefix key state machine), tiled layout engine, border rendering, window/session model, status bar, mouse support, TOML configuration. 448 tests.
+- **teamucks** — Single binary embedding server and client. Currently a placeholder; actual startup and session management is Phase 2.
 
 ## Vision
 
