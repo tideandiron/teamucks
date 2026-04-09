@@ -1,5 +1,8 @@
 //! Session actor: the single mutable owner of all session state.
 //!
+//! Submodules:
+//! - [`pty_reader`]: async task that forwards PTY master output to the actor.
+//!
 //! The [`SessionActor`] runs a `tokio::select!` loop that drains all pending
 //! [`SessionMsg`] messages before rendering.  This coalesces bursts of PTY
 //! output from fast producers before painting, minimising redundant frames.
@@ -26,6 +29,8 @@
 //! driven exclusively by the internal `tokio::time::interval` timer arm in the
 //! select loop.  For tests that need to trigger a render synchronously, call
 //! [`SessionActor::force_render`].
+
+pub mod pty_reader;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
