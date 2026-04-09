@@ -25,7 +25,7 @@ use crate::style::PackedStyle;
 /// to alignment and the discriminant.  Because heap storage is used for fewer
 /// than 1% of cells in real workloads, the hot path (inline) is cache-friendly
 /// and the occasional heap variant is acceptable.
-pub enum GraphemeStorage {
+pub(crate) enum GraphemeStorage {
     /// Up to 4 bytes stored inline — zero allocation.
     Inline {
         /// Raw UTF-8 bytes; only `bytes[..len]` are valid.
@@ -43,7 +43,7 @@ impl GraphemeStorage {
     /// Strings of up to 4 bytes are stored inline; longer strings use the
     /// heap.
     #[must_use]
-    pub fn new(s: &str) -> Self {
+    pub(crate) fn new(s: &str) -> Self {
         let bytes = s.as_bytes();
         if bytes.len() <= 4 {
             let mut buf = [0u8; 4];
@@ -58,7 +58,7 @@ impl GraphemeStorage {
 
     /// Create storage from a single character.
     #[must_use]
-    pub fn from_char(c: char) -> Self {
+    pub(crate) fn from_char(c: char) -> Self {
         let mut buf = [0u8; 4];
         let s = c.encode_utf8(&mut buf);
         Self::new(s)
@@ -73,7 +73,7 @@ impl GraphemeStorage {
     /// [`GraphemeStorage::from_char`].  The `expect` call documents this
     /// invariant; it cannot fire.
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::Inline { bytes, len } => std::str::from_utf8(&bytes[..*len as usize])
                 .expect("GraphemeStorage invariant: inline bytes are always valid UTF-8"),
@@ -83,7 +83,7 @@ impl GraphemeStorage {
 
     /// Return a space character as the default grapheme.
     #[must_use]
-    pub fn space() -> Self {
+    pub(crate) fn space() -> Self {
         Self::Inline { bytes: [b' ', 0, 0, 0], len: 1 }
     }
 }
@@ -197,7 +197,7 @@ impl Cell {
     }
 
     /// Set or clear the wide-character flag.
-    pub fn set_wide(&mut self, value: bool) {
+    pub(crate) fn set_wide(&mut self, value: bool) {
         self.flags.set(CellFlags::WIDE, value);
     }
 
@@ -209,7 +209,7 @@ impl Cell {
     }
 
     /// Set or clear the continuation flag.
-    pub fn set_continuation(&mut self, value: bool) {
+    pub(crate) fn set_continuation(&mut self, value: bool) {
         self.flags.set(CellFlags::CONTINUATION, value);
     }
 
@@ -230,5 +230,92 @@ impl std::fmt::Debug for Cell {
             .field("continuation", &self.is_continuation())
             .field("flags", &self.flags)
             .finish()
+    }
+}
+
+// Cell size is ~48 bytes on 64-bit due to GraphemeStorage::Heap(String).
+// The Inline variant (99% of real-world cells) is compact. If profiling
+// shows Cell size is a frame-diff or scrollback bottleneck, switch to
+// a side-table approach (u32 handle, ~16 bytes). See GUIDELINES.md.
+const _: () = assert!(std::mem::size_of::<Cell>() <= 48);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // GraphemeStorage tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_grapheme_storage_inline_ascii() {
+        let g = GraphemeStorage::new("A");
+        assert_eq!(g.as_str(), "A");
+    }
+
+    #[test]
+    fn test_grapheme_storage_multi_byte() {
+        // 'é' is U+00E9, encoded as 2 UTF-8 bytes: 0xC3 0xA9.
+        let g = GraphemeStorage::new("é");
+        assert_eq!(g.as_str(), "é");
+    }
+
+    #[test]
+    fn test_grapheme_storage_four_byte() {
+        // '🎉' is U+1F389, encoded as 4 UTF-8 bytes — exactly fills the inline buffer.
+        let g = GraphemeStorage::new("🎉");
+        assert_eq!(g.as_str(), "🎉");
+    }
+
+    #[test]
+    fn test_grapheme_storage_multi_codepoint() {
+        // Family emoji cluster: multiple codepoints joined by ZWJ — exceeds 4 bytes.
+        let cluster = "👨\u{200d}👩\u{200d}👧";
+        let g = GraphemeStorage::new(cluster);
+        assert_eq!(g.as_str(), cluster);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Cell tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_cell_default_is_space() {
+        let c = Cell::default();
+        assert_eq!(c.grapheme(), " ");
+        assert!(!c.is_wide());
+        assert!(!c.is_continuation());
+    }
+
+    #[test]
+    fn test_cell_set_ascii() {
+        let mut c = Cell::default();
+        c.set_grapheme("A");
+        assert_eq!(c.grapheme(), "A");
+    }
+
+    #[test]
+    fn test_cell_set_emoji() {
+        let mut c = Cell::default();
+        c.set_grapheme("🎉");
+        assert_eq!(c.grapheme(), "🎉");
+    }
+
+    #[test]
+    fn test_cell_wide_flag() {
+        let mut c = Cell::default();
+        assert!(!c.is_wide());
+        c.set_wide(true);
+        assert!(c.is_wide());
+        c.set_wide(false);
+        assert!(!c.is_wide());
+    }
+
+    #[test]
+    fn test_cell_continuation_flag() {
+        let mut c = Cell::default();
+        assert!(!c.is_continuation());
+        c.set_continuation(true);
+        assert!(c.is_continuation());
     }
 }

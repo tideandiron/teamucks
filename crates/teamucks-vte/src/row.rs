@@ -61,7 +61,7 @@ impl Row {
     /// # Panics
     ///
     /// Panics if `col >= self.len()`.
-    pub fn cell_mut(&mut self, col: usize) -> &mut Cell {
+    pub(crate) fn cell_mut(&mut self, col: usize) -> &mut Cell {
         &mut self.cells[col]
     }
 
@@ -72,7 +72,9 @@ impl Row {
     }
 
     /// Return a mutable slice of all cells.
-    pub fn cells_mut(&mut self) -> &mut [Cell] {
+    // Retained for future internal use (renderers that do in-place mutation).
+    #[allow(dead_code)]
+    pub(crate) fn cells_mut(&mut self) -> &mut [Cell] {
         &mut self.cells
     }
 
@@ -84,7 +86,7 @@ impl Row {
     }
 
     /// Set or clear the soft-wrap flag.
-    pub fn set_soft_wrapped(&mut self, value: bool) {
+    pub(crate) fn set_soft_wrapped(&mut self, value: bool) {
         self.soft_wrapped = value;
     }
 
@@ -96,7 +98,7 @@ impl Row {
     ///
     /// The internal `Vec` is resized in place and does not reallocate unless
     /// the capacity must grow.
-    pub fn resize(&mut self, cols: usize) {
+    pub(crate) fn resize(&mut self, cols: usize) {
         self.cells.resize_with(cols, Cell::default);
     }
 
@@ -118,5 +120,65 @@ impl std::fmt::Debug for Row {
             .field("soft_wrapped", &self.soft_wrapped)
             // cells omitted for brevity — would produce very large output
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_row_creation() {
+        let row = Row::new(80);
+        assert_eq!(row.len(), 80);
+        assert!(!row.is_empty());
+    }
+
+    #[test]
+    fn test_row_cell_access() {
+        let mut row = Row::new(80);
+        row.cell_mut(0).set_grapheme("X");
+        assert_eq!(row.cell(0).grapheme(), "X");
+        // Other cells remain default.
+        assert_eq!(row.cell(1).grapheme(), " ");
+    }
+
+    #[test]
+    fn test_row_soft_wrap_flag() {
+        let mut row = Row::new(80);
+        assert!(!row.is_soft_wrapped());
+        row.set_soft_wrapped(true);
+        assert!(row.is_soft_wrapped());
+    }
+
+    #[test]
+    fn test_row_resize_grow() {
+        let mut row = Row::new(80);
+        row.cell_mut(0).set_grapheme("A");
+        row.resize(120);
+        assert_eq!(row.len(), 120);
+        // Original content preserved.
+        assert_eq!(row.cell(0).grapheme(), "A");
+        // New cells are default.
+        assert_eq!(row.cell(119).grapheme(), " ");
+    }
+
+    #[test]
+    fn test_row_resize_shrink() {
+        let mut row = Row::new(80);
+        row.cell_mut(0).set_grapheme("A");
+        row.resize(40);
+        assert_eq!(row.len(), 40);
+        assert_eq!(row.cell(0).grapheme(), "A");
+    }
+
+    #[test]
+    fn test_row_clear() {
+        let mut row = Row::new(80);
+        row.cell_mut(0).set_grapheme("Z");
+        row.set_soft_wrapped(true);
+        row.clear();
+        assert_eq!(row.cell(0).grapheme(), " ");
+        assert!(!row.is_soft_wrapped());
     }
 }

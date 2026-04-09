@@ -9,16 +9,42 @@ use crate::{cell::Cell, row::Row, style::PackedStyle};
 #[derive(Clone, Debug, Default)]
 pub struct Cursor {
     /// Column of the cursor (0-based, clamped to `0..=cols-1`).
-    pub col: usize,
+    pub(crate) col: usize,
     /// Row of the cursor (0-based, clamped to `0..=rows-1`).
-    pub row: usize,
+    pub(crate) row: usize,
     /// Active text style applied to characters written at this cursor position.
-    pub style: PackedStyle,
+    pub(crate) style: PackedStyle,
     /// Whether the cursor is visible.
-    pub visible: bool,
+    pub(crate) visible: bool,
     /// When `true`, the next printable character written to the grid will first
     /// advance the cursor to the start of the next line (auto-wrap pending).
-    pub wrap_pending: bool,
+    pub(crate) wrap_pending: bool,
+}
+
+impl Cursor {
+    /// Return the cursor column (0-based).
+    #[must_use]
+    pub fn col(&self) -> usize {
+        self.col
+    }
+
+    /// Return the cursor row (0-based).
+    #[must_use]
+    pub fn row(&self) -> usize {
+        self.row
+    }
+
+    /// Return the active text style at the cursor.
+    #[must_use]
+    pub fn style(&self) -> &PackedStyle {
+        &self.style
+    }
+
+    /// Return `true` if the cursor is visible.
+    #[must_use]
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
 }
 
 /// The visible grid of terminal cells.
@@ -215,13 +241,14 @@ impl Grid {
     ///   cursor does not advance.
     /// - **Full-width characters** (CJK, some emoji): occupy two columns.  If
     ///   the cursor is at the last column, the current cell is filled with a
-    ///   space and the cursor soft-wraps before writing.
+    ///   space and the cursor soft-wraps before writing.  If the grid is only
+    ///   1 column wide, the character is replaced with a space placeholder.
     /// - **Normal characters**: occupy one column.
     ///
     /// # Wrap-pending semantics
     ///
     /// Writing to the last column does not immediately move to the next row.
-    /// Instead, [`Cursor::wrap_pending`] is set.  The next call to
+    /// Instead, `wrap_pending` is set on the cursor.  The next call to
     /// `write_char` with a non-zero-width character triggers the actual wrap.
     pub fn write_char(&mut self, c: char) {
         let width = UnicodeWidthChar::width(c).unwrap_or(0);
@@ -232,22 +259,7 @@ impl Grid {
             return;
         }
 
-        // --- Resolve any pending wrap ---
-        if self.cursor.wrap_pending {
-            // Mark the current row as soft-wrapped.
-            let wrap_row = self.cursor.row;
-            self.visible[wrap_row].set_soft_wrapped(true);
-            // Advance to next line, scrolling if at the bottom.
-            let next_row = self.cursor.row + 1;
-            if next_row >= self.rows {
-                self.scroll_up(1);
-                // cursor.row stays at rows-1 after scroll.
-            } else {
-                self.cursor.row = next_row;
-            }
-            self.cursor.col = 0;
-            self.cursor.wrap_pending = false;
-        }
+        self.resolve_pending_wrap();
 
         // --- Handle wide character at end of line ---
         if width == 2 && self.cursor.col + 1 >= self.cols {
@@ -256,6 +268,13 @@ impl Grid {
             let fill_col = self.cursor.col;
             let fill_row = self.cursor.row;
             self.visible[fill_row].cell_mut(fill_col).reset();
+
+            // If the grid is only 1 column wide the wide char cannot fit at
+            // all; write a space placeholder and return without advancing.
+            if self.cols == 1 {
+                return;
+            }
+
             self.visible[fill_row].set_soft_wrapped(true);
             let next_row = self.cursor.row + 1;
             if next_row >= self.rows {
@@ -289,13 +308,16 @@ impl Grid {
         }
 
         // For wide characters, write the continuation placeholder.
+        // Guard with cols check: on a 1-col grid the wide char already
+        // returned above, but guard defensively.
         if width == 2 {
             let cont_col = target_col + 1;
-            // cont_col is guaranteed < cols by the wrap-at-end-of-line check above.
-            let cell = self.visible[target_row].cell_mut(cont_col);
-            cell.reset();
-            *cell.style_mut() = self.cursor.style;
-            cell.set_continuation(true);
+            if cont_col < self.cols {
+                let cell = self.visible[target_row].cell_mut(cont_col);
+                cell.reset();
+                *cell.style_mut() = self.cursor.style;
+                cell.set_continuation(true);
+            }
         }
 
         // --- Advance cursor ---
@@ -307,6 +329,25 @@ impl Grid {
         } else {
             self.cursor.col = new_col;
         }
+    }
+
+    /// Resolve a pending soft-wrap: mark the current row as soft-wrapped and
+    /// advance the cursor to the start of the next line, scrolling if needed.
+    fn resolve_pending_wrap(&mut self) {
+        if !self.cursor.wrap_pending {
+            return;
+        }
+        let wrap_row = self.cursor.row;
+        self.visible[wrap_row].set_soft_wrapped(true);
+        let next_row = self.cursor.row + 1;
+        if next_row >= self.rows {
+            self.scroll_up(1);
+            // cursor.row stays at rows-1 after scroll.
+        } else {
+            self.cursor.row = next_row;
+        }
+        self.cursor.col = 0;
+        self.cursor.wrap_pending = false;
     }
 
     /// Combine `c` with the grapheme in the cell immediately before the cursor.

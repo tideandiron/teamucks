@@ -1,6 +1,4 @@
 // Integration tests for cell model and grid structures.
-// Written before implementation (TDD): all tests must compile with stubs and fail
-// for the right reason before any implementation exists.
 
 use teamucks_vte::{
     cell::Cell,
@@ -84,41 +82,7 @@ fn test_packed_style_size() {
 }
 
 // ---------------------------------------------------------------------------
-// GraphemeStorage tests
-// ---------------------------------------------------------------------------
-
-use teamucks_vte::cell::GraphemeStorage;
-
-#[test]
-fn test_grapheme_storage_inline_ascii() {
-    let g = GraphemeStorage::new("A");
-    assert_eq!(g.as_str(), "A");
-}
-
-#[test]
-fn test_grapheme_storage_multi_byte() {
-    // 'é' is U+00E9, encoded as 2 UTF-8 bytes: 0xC3 0xA9.
-    let g = GraphemeStorage::new("é");
-    assert_eq!(g.as_str(), "é");
-}
-
-#[test]
-fn test_grapheme_storage_four_byte() {
-    // '🎉' is U+1F389, encoded as 4 UTF-8 bytes — exactly fills the inline buffer.
-    let g = GraphemeStorage::new("🎉");
-    assert_eq!(g.as_str(), "🎉");
-}
-
-#[test]
-fn test_grapheme_storage_multi_codepoint() {
-    // Family emoji cluster: multiple codepoints joined by ZWJ — exceeds 4 bytes.
-    let cluster = "👨‍👩‍👧";
-    let g = GraphemeStorage::new(cluster);
-    assert_eq!(g.as_str(), cluster);
-}
-
-// ---------------------------------------------------------------------------
-// Cell tests
+// Cell tests (public interface only)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -146,26 +110,8 @@ fn test_cell_set_emoji() {
     assert_eq!(c.grapheme(), "🎉");
 }
 
-#[test]
-fn test_cell_wide_flag() {
-    let mut c = Cell::default();
-    assert!(!c.is_wide());
-    c.set_wide(true);
-    assert!(c.is_wide());
-    c.set_wide(false);
-    assert!(!c.is_wide());
-}
-
-#[test]
-fn test_cell_continuation_flag() {
-    let mut c = Cell::default();
-    assert!(!c.is_continuation());
-    c.set_continuation(true);
-    assert!(c.is_continuation());
-}
-
 // ---------------------------------------------------------------------------
-// Row tests
+// Row tests (public read interface only — mutation is pub(crate))
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -176,50 +122,15 @@ fn test_row_creation() {
 }
 
 #[test]
-fn test_row_cell_access() {
-    let mut row = Row::new(80);
-    row.cell_mut(0).set_grapheme("X");
-    assert_eq!(row.cell(0).grapheme(), "X");
-    // Other cells remain default.
-    assert_eq!(row.cell(1).grapheme(), " ");
-}
-
-#[test]
-fn test_row_soft_wrap_flag() {
-    let mut row = Row::new(80);
-    assert!(!row.is_soft_wrapped());
-    row.set_soft_wrapped(true);
-    assert!(row.is_soft_wrapped());
-}
-
-#[test]
-fn test_row_resize_grow() {
-    let mut row = Row::new(80);
-    row.cell_mut(0).set_grapheme("A");
-    row.resize(120);
-    assert_eq!(row.len(), 120);
-    // Original content preserved.
-    assert_eq!(row.cell(0).grapheme(), "A");
-    // New cells are default.
-    assert_eq!(row.cell(119).grapheme(), " ");
-}
-
-#[test]
-fn test_row_resize_shrink() {
-    let mut row = Row::new(80);
-    row.cell_mut(0).set_grapheme("A");
-    row.resize(40);
-    assert_eq!(row.len(), 40);
-    assert_eq!(row.cell(0).grapheme(), "A");
-}
-
-#[test]
-fn test_row_clear() {
-    let mut row = Row::new(80);
-    row.cell_mut(0).set_grapheme("Z");
-    row.set_soft_wrapped(true);
-    row.clear();
+fn test_row_cell_read() {
+    let row = Row::new(80);
+    // Default cell is a space.
     assert_eq!(row.cell(0).grapheme(), " ");
+}
+
+#[test]
+fn test_row_soft_wrap_read() {
+    let row = Row::new(80);
     assert!(!row.is_soft_wrapped());
 }
 
@@ -267,9 +178,16 @@ fn test_grid_cursor_clamped() {
 #[test]
 fn test_grid_cursor_clears_wrap_pending() {
     let mut g = Grid::new(80, 24);
-    g.cursor_mut().wrap_pending = true;
+    // Trigger wrap_pending by writing to the last column.
+    g.set_cursor(79, 0);
+    g.write_char('Z');
+    // Now set_cursor must clear wrap_pending.
     g.set_cursor(0, 0);
-    assert!(!g.cursor().wrap_pending);
+    // Write another char — if wrap_pending were still set the cursor would
+    // jump to row 1; instead it should stay on row 0.
+    g.write_char('A');
+    assert_eq!(g.cursor_row(), 0);
+    assert_eq!(g.cursor_col(), 1);
 }
 
 #[test]
@@ -317,9 +235,11 @@ fn test_grid_write_char_wraps_at_end() {
     // Advance cursor to last column.
     g.set_cursor(79, 0);
     g.write_char('Z');
-    // Cursor stays at col 79, wrap_pending is set.
+    // Cursor stays at col 79, wrap_pending is set (tested via observable behaviour).
     assert_eq!(g.cursor_col(), 79);
-    assert!(g.cursor().wrap_pending);
+    // Next write goes to row 1.
+    g.write_char('A');
+    assert_eq!(g.cursor_row(), 1);
 }
 
 #[test]
@@ -327,7 +247,6 @@ fn test_grid_write_char_pending_wrap_then_char() {
     let mut g = Grid::new(80, 24);
     g.set_cursor(79, 0);
     g.write_char('Z');
-    assert!(g.cursor().wrap_pending);
     // Writing another char should trigger actual wrap.
     g.write_char('A');
     assert_eq!(g.cursor_row(), 1);
@@ -458,4 +377,97 @@ fn test_grid_clear() {
     g.cell_mut(0, 0).set_grapheme("X");
     g.clear();
     assert_eq!(g.cell(0, 0).grapheme(), " ");
+}
+
+// ---------------------------------------------------------------------------
+// Boundary tests (Fix 7)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_grid_restore_cursor_without_save() {
+    let mut grid = Grid::new(80, 24);
+    grid.set_cursor(5, 5);
+    grid.restore_cursor(); // no-op when nothing saved
+    assert_eq!(grid.cursor_col(), 5);
+    assert_eq!(grid.cursor_row(), 5);
+}
+
+#[test]
+fn test_grid_scroll_up_count_exceeds_rows() {
+    let mut grid = Grid::new(80, 5);
+    grid.write_char('A');
+    grid.scroll_up(10); // count > rows — should not panic, grid should be empty
+    assert_eq!(grid.row_text(0), "");
+}
+
+#[test]
+fn test_grid_scroll_down_count_exceeds_rows() {
+    let mut grid = Grid::new(80, 5);
+    grid.write_char('A');
+    grid.scroll_down(10); // count > rows — should not panic
+    assert_eq!(grid.row_text(4), "");
+}
+
+#[test]
+fn test_grid_resize_clamps_cursor() {
+    let mut grid = Grid::new(80, 24);
+    grid.set_cursor(79, 23);
+    grid.resize(40, 12);
+    assert_eq!(grid.cursor_col(), 39);
+    assert_eq!(grid.cursor_row(), 11);
+}
+
+#[test]
+fn test_grid_combine_at_origin() {
+    let mut grid = Grid::new(80, 24);
+    // Zero-width char at (0,0) with no previous cell — should not panic.
+    grid.write_char('\u{0301}'); // combining acute accent; no crash is success
+}
+
+#[test]
+fn test_grid_minimum_dimensions() {
+    let grid = Grid::new(1, 1);
+    assert_eq!(grid.cols(), 1);
+    assert_eq!(grid.rows(), 1);
+}
+
+#[test]
+fn test_cell_reset() {
+    let mut cell = Cell::default();
+    cell.set_grapheme("X");
+    cell.style_mut().set_foreground(Color::Rgb(255, 0, 0));
+    cell.reset();
+    assert_eq!(cell.grapheme(), " ");
+    assert!(!cell.is_wide());
+    assert_eq!(cell.style(), &PackedStyle::default());
+}
+
+#[test]
+fn test_grid_write_char_scroll_at_bottom() {
+    let mut grid = Grid::new(80, 3);
+    grid.set_cursor(0, 2); // last row — write past the end to trigger wrap + scroll
+    for c in "hello world this is a long line that will wrap".chars() {
+        grid.write_char(c);
+    }
+    // Should not panic; content was scrolled
+}
+
+#[test]
+fn test_grid_write_char_wide_on_narrow_grid() {
+    let mut grid = Grid::new(1, 3);
+    grid.write_char('世'); // width 2, can't fit in 1-col grid — should not panic
+}
+
+// ---------------------------------------------------------------------------
+// Cursor getter tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cursor_getters() {
+    let g = Grid::new(80, 24);
+    let cursor = g.cursor();
+    assert_eq!(cursor.col(), 0);
+    assert_eq!(cursor.row(), 0);
+    assert_eq!(cursor.style(), &PackedStyle::default());
+    assert!(!cursor.is_visible());
 }
