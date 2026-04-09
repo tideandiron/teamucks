@@ -221,69 +221,11 @@ impl TerminalState {
             _ => None,
         }
     }
-}
 
-impl Performer for TerminalState {
-    fn print(&mut self, c: char) {
-        self.grid.write_char(c);
-    }
-
-    fn execute(&mut self, byte: u8) {
-        match byte {
-            // BS — move cursor left one column, clamp at column 0.
-            0x08 => {
-                let col = self.grid.cursor_col();
-                let row = self.grid.cursor_row();
-                if col > 0 {
-                    self.grid.set_cursor(col - 1, row);
-                }
-            }
-
-            // HT — advance to the next tab stop (every 8 columns by default).
-            0x09 => {
-                let col = self.grid.cursor_col();
-                let row = self.grid.cursor_row();
-                let cols = self.grid.cols();
-                // Next tab stop is at the smallest multiple of 8 that is > col.
-                let next_stop = (col / 8 + 1) * 8;
-                // Clamp to the last column (not past it).
-                let new_col = next_stop.min(cols - 1);
-                self.grid.set_cursor(new_col, row);
-            }
-
-            // LF / VT / FF — move cursor down one row, scroll if at the bottom.
-            0x0A..=0x0C => {
-                let col = self.grid.cursor_col();
-                let row = self.grid.cursor_row();
-                let rows = self.grid.rows();
-                if row + 1 >= rows {
-                    // At the last row — scroll the grid up by one.
-                    self.grid.scroll_up(1);
-                    // Cursor stays at the (now blank) last row.
-                    self.grid.set_cursor(col, row);
-                } else {
-                    self.grid.set_cursor(col, row + 1);
-                }
-            }
-
-            // CR — move cursor to column 0 of the current row.
-            0x0D => {
-                let row = self.grid.cursor_row();
-                self.grid.set_cursor(0, row);
-            }
-
-            // All other C0 controls are silently ignored.
-            // This includes BEL (0x07): audio bell is a display-layer concern,
-            // not a grid mutation.  Features 5+ will handle additional controls.
-            _ => {}
-        }
-    }
-
-    fn csi_dispatch(&mut self, params: &[u16], _intermediates: &[u8], action: u8) {
+    /// Handle cursor movement CSI sequences (CUU, CUD, CUF, CUB, CNL, CPL,
+    /// CHA, CUP/HVP, VPA).
+    fn apply_cursor_movement(&mut self, params: &[u16], action: u8) {
         match action {
-            // SGR — Select Graphic Rendition
-            b'm' => self.apply_sgr(params),
-
             // CUU — Cursor Up: move up n rows, clamp at row 0.
             b'A' => {
                 let n = param(params, 0, 1) as usize;
@@ -356,6 +298,147 @@ impl Performer for TerminalState {
                 self.grid.set_cursor(self.grid.cursor_col(), row);
             }
 
+            _ => {}
+        }
+    }
+
+    /// Handle scroll-region CSI sequences: DECSTBM (`r`), SU (`S`), SD (`T`).
+    fn apply_scroll_region(&mut self, params: &[u16], action: u8) {
+        match action {
+            // DECSTBM — Set Top and Bottom Margins (CSI top ; bottom r).
+            //
+            // Sets the scroll region.  Parameters are 1-indexed.  Omitted or
+            // zero parameters default to 1 (top) or `rows` (bottom).
+            //
+            // Rules per spec:
+            //   - Both parameters must be within 1..=rows (1-indexed).
+            //   - top must be strictly less than bottom.
+            //   - Invalid values: the sequence is ignored entirely.
+            //   - After a valid set the cursor moves to (0, 0).
+            b'r' => {
+                let rows = self.grid.rows();
+                // A zero top-param defaults to 1; a zero bottom-param
+                // defaults to `rows` (full screen).  We handle this manually
+                // rather than using the general `param()` helper because the
+                // default for bottom is `rows`, not 1.
+                let top_1 = {
+                    let v = params.first().copied().unwrap_or(0);
+                    if v == 0 {
+                        1
+                    } else {
+                        v
+                    }
+                } as usize;
+                let bottom_1 = {
+                    let v = params.get(1).copied().unwrap_or(0);
+                    // Truncation: rows fits in u16 for any real terminal size.
+                    #[allow(clippy::cast_possible_truncation)]
+                    if v == 0 {
+                        rows as u16
+                    } else {
+                        v
+                    }
+                } as usize;
+
+                // Validate: both must be within 1..=rows and top < bottom.
+                if top_1 >= 1 && bottom_1 <= rows && top_1 < bottom_1 {
+                    self.grid.set_scroll_region(top_1 - 1, bottom_1 - 1);
+                    // Cursor moves to (0, 0) after DECSTBM (DECOM is Feature 8).
+                    self.grid.set_cursor(0, 0);
+                }
+                // Invalid values: ignore the sequence entirely.
+            }
+
+            // SU — Scroll Up (CSI n S): scroll up n lines within scroll region.
+            b'S' => {
+                let count = param(params, 0, 1) as usize;
+                let (top, bottom) = self.grid.scroll_region();
+                self.grid.scroll_up_in_region(count, top, bottom);
+            }
+
+            // SD — Scroll Down (CSI n T): scroll down n lines within scroll region.
+            b'T' => {
+                let count = param(params, 0, 1) as usize;
+                let (top, bottom) = self.grid.scroll_region();
+                self.grid.scroll_down_in_region(count, top, bottom);
+            }
+
+            _ => {}
+        }
+    }
+}
+
+impl Performer for TerminalState {
+    fn print(&mut self, c: char) {
+        self.grid.write_char(c);
+    }
+
+    fn execute(&mut self, byte: u8) {
+        match byte {
+            // BS — move cursor left one column, clamp at column 0.
+            0x08 => {
+                let col = self.grid.cursor_col();
+                let row = self.grid.cursor_row();
+                if col > 0 {
+                    self.grid.set_cursor(col - 1, row);
+                }
+            }
+
+            // HT — advance to the next tab stop (every 8 columns by default).
+            0x09 => {
+                let col = self.grid.cursor_col();
+                let row = self.grid.cursor_row();
+                let cols = self.grid.cols();
+                // Next tab stop is at the smallest multiple of 8 that is > col.
+                let next_stop = (col / 8 + 1) * 8;
+                // Clamp to the last column (not past it).
+                let new_col = next_stop.min(cols - 1);
+                self.grid.set_cursor(new_col, row);
+            }
+
+            // LF / VT / FF — move cursor down one row, scrolling within the
+            // scroll region if the cursor is at the region's bottom.
+            0x0A..=0x0C => {
+                let col = self.grid.cursor_col();
+                let row = self.grid.cursor_row();
+                let (region_top, region_bottom) = self.grid.scroll_region();
+                if row == region_bottom {
+                    // At the bottom of the scroll region — scroll up within it.
+                    let (rt, rb) = (region_top, region_bottom);
+                    self.grid.scroll_up_in_region(1, rt, rb);
+                    // Cursor stays at region_bottom (now blank).
+                    self.grid.set_cursor(col, row);
+                } else if row + 1 < self.grid.rows() {
+                    // Not at the bottom of the region or screen — just move down.
+                    self.grid.set_cursor(col, row + 1);
+                }
+                // If the cursor is already at the very last row of the screen
+                // (and not inside the scroll region), LF is a no-op.
+            }
+
+            // CR — move cursor to column 0 of the current row.
+            0x0D => {
+                let row = self.grid.cursor_row();
+                self.grid.set_cursor(0, row);
+            }
+
+            // All other C0 controls are silently ignored.
+            // This includes BEL (0x07): audio bell is a display-layer concern,
+            // not a grid mutation.  Features 5+ will handle additional controls.
+            _ => {}
+        }
+    }
+
+    fn csi_dispatch(&mut self, params: &[u16], _intermediates: &[u8], action: u8) {
+        match action {
+            // SGR — Select Graphic Rendition
+            b'm' => self.apply_sgr(params),
+
+            // Cursor movement sequences (A–H, d, f) delegated to a helper.
+            b'A' | b'B' | b'C' | b'D' | b'E' | b'F' | b'G' | b'H' | b'd' | b'f' => {
+                self.apply_cursor_movement(params, action);
+            }
+
             // ED — Erase in Display (CSI n J).
             //
             // Erased cells always receive the default style, not the cursor's
@@ -402,6 +485,9 @@ impl Performer for TerminalState {
                 self.grid.erase_chars(count);
             }
 
+            // Scroll region sequences (r, S, T) delegated to a helper.
+            b'r' | b'S' | b'T' => self.apply_scroll_region(params, action),
+
             // All other CSI sequences are silently ignored until later features.
             _ => {}
         }
@@ -413,6 +499,39 @@ impl Performer for TerminalState {
             b'7' => self.grid.save_cursor(),
             // DECRC — Restore Cursor (ESC 8).
             b'8' => self.grid.restore_cursor(),
+
+            // IND — Index (ESC D): move cursor down one line.
+            //
+            // If the cursor is at the bottom of the scroll region, scroll up
+            // within the region.  Otherwise, just move down.
+            b'D' => {
+                let col = self.grid.cursor_col();
+                let row = self.grid.cursor_row();
+                let (region_top, region_bottom) = self.grid.scroll_region();
+                if row == region_bottom {
+                    self.grid.scroll_up_in_region(1, region_top, region_bottom);
+                    self.grid.set_cursor(col, row);
+                } else if row + 1 < self.grid.rows() {
+                    self.grid.set_cursor(col, row + 1);
+                }
+            }
+
+            // RI — Reverse Index (ESC M): move cursor up one line.
+            //
+            // If the cursor is at the top of the scroll region, scroll down
+            // within the region.  Otherwise, just move up.
+            b'M' => {
+                let col = self.grid.cursor_col();
+                let row = self.grid.cursor_row();
+                let (region_top, region_bottom) = self.grid.scroll_region();
+                if row == region_top {
+                    self.grid.scroll_down_in_region(1, region_top, region_bottom);
+                    self.grid.set_cursor(col, row);
+                } else if row > 0 {
+                    self.grid.set_cursor(col, row - 1);
+                }
+            }
+
             // All other ESC sequences are silently ignored until later features.
             _ => {}
         }

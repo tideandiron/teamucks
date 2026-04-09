@@ -76,6 +76,10 @@ pub struct Grid {
     rows: usize,
     cursor: Cursor,
     saved_cursor: Option<Cursor>,
+    /// The active scroll region as `(top, bottom)`, both inclusive, 0-indexed.
+    ///
+    /// Defaults to `(0, rows - 1)` (the full screen).  Set via DECSTBM.
+    scroll_region: (usize, usize),
 }
 
 impl Grid {
@@ -91,7 +95,14 @@ impl Grid {
         assert!(cols > 0, "Grid cols must be > 0");
         assert!(rows > 0, "Grid rows must be > 0");
         let visible = (0..rows).map(|_| Row::new(cols)).collect();
-        Self { visible, cols, rows, cursor: Cursor::default(), saved_cursor: None }
+        Self {
+            visible,
+            cols,
+            rows,
+            cursor: Cursor::default(),
+            saved_cursor: None,
+            scroll_region: (0, rows - 1),
+        }
     }
 
     /// Return the number of columns.
@@ -229,6 +240,9 @@ impl Grid {
         // Clamp cursor to new bounds.
         self.cursor.col = self.cursor.col.min(cols - 1);
         self.cursor.row = self.cursor.row.min(rows - 1);
+
+        // Resize resets the scroll region to the full new screen.
+        self.scroll_region = (0, rows - 1);
     }
 
     /// Clear the entire grid, resetting all cells to the default (space,
@@ -286,12 +300,7 @@ impl Grid {
             }
 
             self.visible[fill_row].set_soft_wrapped(true);
-            let next_row = self.cursor.row + 1;
-            if next_row >= self.rows {
-                self.scroll_up(1);
-            } else {
-                self.cursor.row = next_row;
-            }
+            self.advance_cursor_row_for_wrap();
             self.cursor.col = 0;
         }
 
@@ -349,15 +358,29 @@ impl Grid {
         }
         let wrap_row = self.cursor.row;
         self.visible[wrap_row].set_soft_wrapped(true);
-        let next_row = self.cursor.row + 1;
-        if next_row >= self.rows {
-            self.scroll_up(1);
-            // cursor.row stays at rows-1 after scroll.
-        } else {
-            self.cursor.row = next_row;
-        }
+        self.advance_cursor_row_for_wrap();
         self.cursor.col = 0;
         self.cursor.wrap_pending = false;
+    }
+
+    /// Advance the cursor one row downward for a wrap or LF-style operation.
+    ///
+    /// - If the cursor is at the bottom of the scroll region, scroll up within
+    ///   the region (cursor stays at the bottom row).
+    /// - If the cursor is below the scroll region or at the screen bottom
+    ///   without being in the region, just move down without scrolling.
+    /// - Otherwise, move down by one row.
+    fn advance_cursor_row_for_wrap(&mut self) {
+        let (region_top, region_bottom) = self.scroll_region;
+        if self.cursor.row == region_bottom {
+            // At the bottom of the scroll region — scroll up within it.
+            self.scroll_up_in_region(1, region_top, region_bottom);
+            // cursor.row stays at region_bottom (the now-blank bottom row).
+        } else if self.cursor.row + 1 < self.rows {
+            self.cursor.row += 1;
+        }
+        // If cursor.row == rows-1 and not in the region (already at screen
+        // bottom outside the region), do nothing (no advance, no scroll).
     }
 
     /// Combine `c` with the grapheme in the cell immediately before the cursor.
@@ -408,28 +431,84 @@ impl Grid {
         }
     }
 
-    /// Scroll the visible grid up by `count` rows.
+    // -----------------------------------------------------------------------
+    // Scroll region
+    // -----------------------------------------------------------------------
+
+    /// Return the current scroll region as `(top, bottom)`, both inclusive,
+    /// 0-indexed.
+    #[must_use]
+    pub fn scroll_region(&self) -> (usize, usize) {
+        self.scroll_region
+    }
+
+    /// Set the scroll region.
     ///
-    /// The top `count` rows are discarded.  New blank rows are appended at the
-    /// bottom.  The cursor position is not changed.
-    pub fn scroll_up(&mut self, count: usize) {
-        let count = count.min(self.rows);
-        self.visible.drain(0..count);
+    /// `top` and `bottom` are 0-indexed and inclusive.  The caller is
+    /// responsible for validating that `top < bottom` and that both values are
+    /// within `0..rows`.
+    pub(crate) fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        self.scroll_region = (top, bottom);
+    }
+
+    // -----------------------------------------------------------------------
+    // Scroll operations
+    // -----------------------------------------------------------------------
+
+    /// Scroll upward within a specific row range by `count` rows.
+    ///
+    /// Only rows in `top..=bottom` participate.  The row at `top` is removed
+    /// and a blank row is inserted at `bottom`.  Rows outside `top..=bottom`
+    /// are untouched.  The cursor position is not changed.
+    pub(crate) fn scroll_up_in_region(&mut self, count: usize, top: usize, bottom: usize) {
+        let region_height = bottom - top + 1;
+        let count = count.min(region_height);
+        // Drain the top `count` rows of the region (indices top..top+count).
+        self.visible.drain(top..top + count);
+        // Insert `count` blank rows at position `bottom - count + 1` (= old
+        // `bottom` position after drain), i.e. at `bottom + 1 - count`.
+        let insert_at = bottom + 1 - count;
         for _ in 0..count {
-            self.visible.push(Row::new(self.cols));
+            self.visible.insert(insert_at, Row::new(self.cols));
         }
     }
 
-    /// Scroll the visible grid down by `count` rows.
+    /// Scroll downward within a specific row range by `count` rows.
     ///
-    /// The bottom `count` rows are discarded.  New blank rows are inserted at
-    /// the top.  The cursor position is not changed.
-    pub fn scroll_down(&mut self, count: usize) {
-        let count = count.min(self.rows);
-        self.visible.truncate(self.rows - count);
+    /// Only rows in `top..=bottom` participate.  The row at `bottom` is
+    /// removed and a blank row is inserted at `top`.  Rows outside
+    /// `top..=bottom` are untouched.  The cursor position is not changed.
+    pub(crate) fn scroll_down_in_region(&mut self, count: usize, top: usize, bottom: usize) {
+        let region_height = bottom - top + 1;
+        let count = count.min(region_height);
+        // Remove the bottom `count` rows of the region.
+        self.visible.drain(bottom + 1 - count..=bottom);
+        // Insert `count` blank rows at `top`.
         for _ in 0..count {
-            self.visible.insert(0, Row::new(self.cols));
+            self.visible.insert(top, Row::new(self.cols));
         }
+    }
+
+    /// Scroll the visible grid up by `count` rows within the current scroll
+    /// region.
+    ///
+    /// The top `count` rows of the region are discarded.  New blank rows are
+    /// appended at the bottom of the region.  The cursor position is not
+    /// changed.
+    pub fn scroll_up(&mut self, count: usize) {
+        let (top, bottom) = self.scroll_region;
+        self.scroll_up_in_region(count, top, bottom);
+    }
+
+    /// Scroll the visible grid down by `count` rows within the current scroll
+    /// region.
+    ///
+    /// The bottom `count` rows of the region are discarded.  New blank rows
+    /// are inserted at the top of the region.  The cursor position is not
+    /// changed.
+    pub fn scroll_down(&mut self, count: usize) {
+        let (top, bottom) = self.scroll_region;
+        self.scroll_down_in_region(count, top, bottom);
     }
 
     // -----------------------------------------------------------------------
