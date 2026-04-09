@@ -15,5 +15,9 @@
 //!   sequences (CSI, ESC, DCS, OSC), and UTF-8 decoded text.
 //! - [`params`] — CSI/DCS parameter accumulator used internally by the parser.
 
+pub mod cell;
+pub mod grid;
 pub mod params;
 pub mod parser;
+pub mod row;
+pub mod style;
