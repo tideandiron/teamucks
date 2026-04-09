@@ -17,8 +17,12 @@
 
 pub mod cell;
 pub mod grid;
+pub mod modes;
 pub mod params;
 pub mod parser;
 pub mod row;
 pub mod style;
 pub mod terminal;
+
+#[cfg(test)]
+mod modes_tests;

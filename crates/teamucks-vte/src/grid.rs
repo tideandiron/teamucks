@@ -1,6 +1,6 @@
 use unicode_width::UnicodeWidthChar;
 
-use crate::{cell::Cell, row::Row, style::PackedStyle};
+use crate::{cell::Cell, modes::ModeFlags, row::Row, style::PackedStyle};
 
 /// Cursor state within a [`Grid`].
 ///
@@ -80,6 +80,8 @@ pub struct Grid {
     ///
     /// Defaults to `(0, rows - 1)` (the full screen).  Set via DECSTBM.
     scroll_region: (usize, usize),
+    /// Terminal mode flags (DECAWM, DECOM, DECTCEM, mouse modes, etc.).
+    modes: ModeFlags,
 }
 
 impl Grid {
@@ -95,13 +97,18 @@ impl Grid {
         assert!(cols > 0, "Grid cols must be > 0");
         assert!(rows > 0, "Grid rows must be > 0");
         let visible = (0..rows).map(|_| Row::new(cols)).collect();
+        let modes = ModeFlags::default_modes();
+        // Cursor visibility starts as true because CURSOR_VISIBLE is in the
+        // default mode set.  Callers may override via `set_modes`.
+        let cursor = Cursor { visible: true, ..Cursor::default() };
         Self {
             visible,
             cols,
             rows,
-            cursor: Cursor::default(),
+            cursor,
             saved_cursor: None,
             scroll_region: (0, rows - 1),
+            modes,
         }
     }
 
@@ -185,6 +192,43 @@ impl Grid {
         self.cursor.col = col.min(self.cols - 1);
         self.cursor.row = row.min(self.rows - 1);
         self.cursor.wrap_pending = false;
+    }
+
+    /// Return the current terminal mode flags.
+    #[must_use]
+    pub fn modes(&self) -> ModeFlags {
+        self.modes
+    }
+
+    /// Update the terminal mode flags.
+    ///
+    /// This method keeps the [`Cursor::visible`] field in sync with
+    /// [`ModeFlags::CURSOR_VISIBLE`] so that callers querying the cursor
+    /// directly always see the correct visibility state.
+    pub fn set_modes(&mut self, modes: ModeFlags) {
+        self.modes = modes;
+        self.cursor.visible = modes.contains(ModeFlags::CURSOR_VISIBLE);
+    }
+
+    /// Position the cursor via a CUP/HVP sequence, honouring DECOM.
+    ///
+    /// When [`ModeFlags::ORIGIN`] is set, `row` is relative to the top of the
+    /// scroll region, and the cursor is clamped to the scroll region rather
+    /// than the full grid.  When DECOM is clear, positioning is absolute.
+    ///
+    /// Both `row` and `col` are 0-indexed at the point of call (the caller is
+    /// responsible for converting from 1-indexed VTE parameters).
+    pub(crate) fn set_cursor_cup(&mut self, col: usize, row: usize) {
+        if self.modes.contains(ModeFlags::ORIGIN) {
+            let (region_top, region_bottom) = self.scroll_region;
+            let abs_row = (region_top + row).min(region_bottom);
+            let abs_col = col.min(self.cols - 1);
+            self.cursor.col = abs_col;
+            self.cursor.row = abs_row;
+            self.cursor.wrap_pending = false;
+        } else {
+            self.set_cursor(col, row);
+        }
     }
 
     /// Save the current cursor state.
@@ -283,12 +327,23 @@ impl Grid {
             return;
         }
 
-        self.resolve_pending_wrap();
+        // Resolve a pending soft-wrap only when DECAWM (auto-wrap) is enabled.
+        // When DECAWM is off and wrap_pending is set, the cursor stays at the
+        // last column and the next character overwrites that cell in-place.
+        if self.cursor.wrap_pending {
+            if self.modes.contains(ModeFlags::AUTO_WRAP) {
+                self.resolve_pending_wrap();
+            } else {
+                // DECAWM off: clear the pending flag (no wrap) and position the
+                // cursor at the last column so the write targets that cell.
+                self.cursor.wrap_pending = false;
+                self.cursor.col = self.cols - 1;
+            }
+        }
 
         // --- Handle wide character at end of line ---
         if width == 2 && self.cursor.col + 1 >= self.cols {
-            // Not enough space for a wide char — fill current cell with space
-            // and soft-wrap.
+            // Not enough space for a wide char — fill current cell with space.
             let fill_col = self.cursor.col;
             let fill_row = self.cursor.row;
             self.visible[fill_row].cell_mut(fill_col).reset();
@@ -299,9 +354,16 @@ impl Grid {
                 return;
             }
 
-            self.visible[fill_row].set_soft_wrapped(true);
-            self.advance_cursor_row_for_wrap();
-            self.cursor.col = 0;
+            if self.modes.contains(ModeFlags::AUTO_WRAP) {
+                // DECAWM on: soft-wrap and continue writing on the next line.
+                self.visible[fill_row].set_soft_wrapped(true);
+                self.advance_cursor_row_for_wrap();
+                self.cursor.col = 0;
+            } else {
+                // DECAWM off: stay on this line; the wide char cannot be
+                // written — the space placeholder stands and we return.
+                return;
+            }
         }
 
         // --- Clean up any existing wide character at the target position ---

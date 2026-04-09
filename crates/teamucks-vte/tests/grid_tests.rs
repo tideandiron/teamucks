@@ -469,5 +469,7 @@ fn test_cursor_getters() {
     assert_eq!(cursor.col(), 0);
     assert_eq!(cursor.row(), 0);
     assert_eq!(cursor.style(), &PackedStyle::default());
-    assert!(!cursor.is_visible());
+    // Cursor is visible by default: DECTCEM (mode 25) is enabled in the
+    // default mode set that Grid::new applies.
+    assert!(cursor.is_visible());
 }

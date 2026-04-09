@@ -17,6 +17,7 @@
 
 use crate::{
     grid::Grid,
+    modes::ModeFlags,
     parser::{Parser, Performer},
     style::{Attr, Color, PackedStyle},
 };
@@ -48,11 +49,16 @@ fn param(params: &[u16], idx: usize, default: u16) -> u16 {
 pub(crate) struct TerminalState {
     grid: Grid,
     title: String,
+    modes: ModeFlags,
 }
 
 impl TerminalState {
     fn new(cols: usize, rows: usize) -> Self {
-        Self { grid: Grid::new(cols, rows), title: String::new() }
+        let grid = Grid::new(cols, rows);
+        // Grid::new initialises modes to ModeFlags::default_modes().  Mirror
+        // that into TerminalState so both are always in sync.
+        let modes = grid.modes();
+        Self { grid, title: String::new(), modes }
     }
 
     /// Handle SGR (Select Graphic Rendition) — CSI … m.
@@ -285,10 +291,10 @@ impl TerminalState {
             b'H' | b'f' => {
                 let row_1 = param(params, 0, 1) as usize;
                 let col_1 = param(params, 1, 1) as usize;
-                // Convert 1-indexed to 0-indexed, clamp to grid bounds.
-                let row = row_1.saturating_sub(1).min(self.grid.rows() - 1);
+                // Convert 1-indexed to 0-indexed; set_cursor_cup handles DECOM.
+                let row = row_1.saturating_sub(1);
                 let col = col_1.saturating_sub(1).min(self.grid.cols() - 1);
-                self.grid.set_cursor(col, row);
+                self.grid.set_cursor_cup(col, row);
             }
 
             // VPA — Vertical Position Absolute: move to row n (1-indexed).
@@ -299,6 +305,65 @@ impl TerminalState {
             }
 
             _ => {}
+        }
+    }
+
+    /// Apply or clear a single DECSET/DECRST private mode number.
+    ///
+    /// Unknown mode numbers are silently ignored, as required by the spec.
+    fn apply_private_mode(&mut self, mode_num: u16, set: bool) {
+        let flag = match mode_num {
+            1 => ModeFlags::CURSOR_KEYS_APPLICATION,
+            6 => ModeFlags::ORIGIN,
+            7 => ModeFlags::AUTO_WRAP,
+            25 => ModeFlags::CURSOR_VISIBLE,
+            1000 => ModeFlags::MOUSE_REPORT_CLICK,
+            1002 => ModeFlags::MOUSE_REPORT_BUTTON,
+            1003 => ModeFlags::MOUSE_REPORT_ALL,
+            1004 => ModeFlags::FOCUS_EVENTS,
+            1006 => ModeFlags::MOUSE_SGR_FORMAT,
+            2004 => ModeFlags::BRACKETED_PASTE,
+            2026 => ModeFlags::SYNCHRONIZED_OUTPUT,
+            // Unknown mode: silently ignore.
+            _ => return,
+        };
+
+        let mut modes = self.modes;
+        if set {
+            modes.insert(flag);
+        } else {
+            modes.remove(flag);
+        }
+
+        // DECOM (mode 6) homes the cursor on set and reset.
+        let is_decom = mode_num == 6;
+        // DECAWM (mode 7) — when re-enabling auto-wrap, clear any pending
+        // wrap that was accumulated while DECAWM was off.  With DECAWM off
+        // the cursor is "stuck" at the last column; enabling DECAWM means
+        // the cursor is now at the last column normally, and the next
+        // character should write there (not trigger an immediate wrap).
+        let is_decawm_enable = mode_num == 7 && set;
+
+        self.modes = modes;
+        self.grid.set_modes(modes);
+
+        if is_decom {
+            // After changing DECOM, cursor moves to home of the (potentially
+            // relative) coordinate space.
+            if set {
+                // Cursor goes to top of scroll region.
+                let region_top = self.grid.scroll_region().0;
+                self.grid.set_cursor(0, region_top);
+            } else {
+                // Cursor goes to absolute (0,0).
+                self.grid.set_cursor(0, 0);
+            }
+        }
+
+        if is_decawm_enable {
+            // Clear the wrap_pending flag so the cursor is treated as "at
+            // the last column" rather than "about to wrap."
+            self.grid.cursor_mut().wrap_pending = false;
         }
     }
 
@@ -429,7 +494,21 @@ impl Performer for TerminalState {
         }
     }
 
-    fn csi_dispatch(&mut self, params: &[u16], _intermediates: &[u8], action: u8) {
+    fn csi_dispatch(&mut self, params: &[u16], intermediates: &[u8], action: u8) {
+        // DECSET (CSI ? … h) and DECRST (CSI ? … l) — private mode set/reset.
+        if intermediates.contains(&b'?') {
+            match action {
+                b'h' | b'l' => {
+                    let set = action == b'h';
+                    for &mode_num in params {
+                        self.apply_private_mode(mode_num, set);
+                    }
+                    return;
+                }
+                _ => return,
+            }
+        }
+
         match action {
             // SGR — Select Graphic Rendition
             b'm' => self.apply_sgr(params),
@@ -610,6 +689,22 @@ impl Terminal {
     /// Return a mutable reference to the grid.
     pub fn grid_mut(&mut self) -> &mut Grid {
         &mut self.state.grid
+    }
+
+    /// Return the current terminal mode flags.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use teamucks_vte::{modes::ModeFlags, terminal::Terminal};
+    ///
+    /// let t = Terminal::new(80, 24);
+    /// assert!(t.modes().contains(ModeFlags::AUTO_WRAP));
+    /// assert!(t.modes().contains(ModeFlags::CURSOR_VISIBLE));
+    /// ```
+    #[must_use]
+    pub fn modes(&self) -> ModeFlags {
+        self.state.modes
     }
 
     /// Return the current terminal title.
