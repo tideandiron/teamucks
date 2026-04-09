@@ -22,6 +22,7 @@ pub mod modes;
 pub mod params;
 pub mod parser;
 pub mod row;
+pub mod scrollback;
 pub mod style;
 pub mod tabstops;
 pub mod terminal;

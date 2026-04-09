@@ -1,6 +1,9 @@
 use unicode_width::UnicodeWidthChar;
 
-use crate::{cell::Cell, modes::ModeFlags, row::Row, style::PackedStyle, tabstops::TabStops};
+use crate::{
+    cell::Cell, modes::ModeFlags, row::Row, scrollback::ScrollbackBuffer, style::PackedStyle,
+    tabstops::TabStops,
+};
 
 // ---------------------------------------------------------------------------
 // Alternate screen
@@ -110,6 +113,16 @@ pub struct Grid {
     /// Defaults to stops every 8 columns.  Modified by HTS (ESC H) and
     /// TBC (CSI g).
     pub(crate) tabs: TabStops,
+    /// Scrollback buffer for rows that have scrolled off the top of the
+    /// primary screen.
+    ///
+    /// Rows are only captured when:
+    /// - The scroll operation covers the full screen (region == full screen).
+    /// - The alternate screen is not active.
+    ///
+    /// Partial-region scrolls and alternate-screen scrolls discard rows
+    /// silently, matching tmux/xterm behaviour.
+    scrollback: ScrollbackBuffer,
 }
 
 impl Grid {
@@ -139,6 +152,7 @@ impl Grid {
             modes,
             alternate: None,
             tabs: TabStops::new(cols),
+            scrollback: ScrollbackBuffer::default(),
         }
     }
 
@@ -660,13 +674,39 @@ impl Grid {
     /// Only rows in `top..=bottom` participate.  The row at `top` is removed
     /// and a blank row is inserted at `bottom`.  Rows outside `top..=bottom`
     /// are untouched.  The cursor position is not changed.
+    ///
+    /// # Scrollback capture
+    ///
+    /// Rows are pushed to the scrollback buffer when **both** of the following
+    /// hold:
+    /// - The region covers the full screen (`top == 0 && bottom == rows - 1`).
+    /// - The alternate screen is not active.
+    ///
+    /// Partial-region scrolls and alternate-screen scrolls discard rows
+    /// silently, matching tmux/xterm behaviour.
     pub(crate) fn scroll_up_in_region(&mut self, count: usize, top: usize, bottom: usize) {
         let region_height = bottom - top + 1;
         let count = count.min(region_height);
-        // Drain the top `count` rows of the region (indices top..top+count).
-        self.visible.drain(top..top + count);
-        // Insert `count` blank rows at position `bottom - count + 1` (= old
-        // `bottom` position after drain), i.e. at `bottom + 1 - count`.
+
+        // Determine whether to capture scrolled-off rows.
+        let capture = self.alternate.is_none() && top == 0 && bottom == self.rows - 1;
+
+        if capture {
+            // Drain the top `count` rows and push each to scrollback.
+            // Rows are pushed in drain order (top first) so that after all
+            // pushes the most-recently-scrolled-off row ends up at index 0.
+            //
+            // Example: drain [X, Y, Z].  push(X) → [X], push(Y) → [Y, X],
+            // push(Z) → [Z, Y, X].  index 0 = Z (most recent).
+            for row in self.visible.drain(top..top + count) {
+                self.scrollback.push(row);
+            }
+        } else {
+            self.visible.drain(top..top + count);
+        }
+
+        // Insert `count` blank rows at position `bottom + 1 - count` (the old
+        // `bottom` position after drain).
         let insert_at = bottom + 1 - count;
         for _ in 0..count {
             self.visible.insert(insert_at, Row::new(self.cols));
@@ -868,6 +908,68 @@ impl Grid {
         let trimmed_len = text.trim_end_matches(' ').len();
         text.truncate(trimmed_len);
         text
+    }
+
+    // -----------------------------------------------------------------------
+    // Scrollback buffer accessors
+    // -----------------------------------------------------------------------
+
+    /// Return an immutable reference to the scrollback buffer.
+    ///
+    /// The scrollback buffer captures rows that have scrolled off the top of
+    /// the primary screen.  Index `0` is the most recently captured row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use teamucks_vte::terminal::Terminal;
+    ///
+    /// let t = Terminal::new(80, 24);
+    /// assert!(t.grid().scrollback().is_empty());
+    /// ```
+    #[must_use]
+    pub fn scrollback(&self) -> &ScrollbackBuffer {
+        &self.scrollback
+    }
+
+    /// Return a mutable reference to the scrollback buffer.
+    ///
+    /// This allows callers to configure capacity (`set_max_lines`) or clear
+    /// the buffer.
+    pub fn scrollback_mut(&mut self) -> &mut ScrollbackBuffer {
+        &mut self.scrollback
+    }
+
+    /// Return the number of rows currently in the scrollback buffer.
+    ///
+    /// Equivalent to `self.scrollback().len()`.
+    #[must_use]
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// Return the plain-text content of the scrollback row at `index`, with
+    /// trailing spaces trimmed.
+    ///
+    /// Returns `None` if `index >= scrollback_len()`.
+    ///
+    /// `index` follows the same convention as [`ScrollbackBuffer::get`]:
+    /// `0` is the most recently captured row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use teamucks_vte::terminal::Terminal;
+    ///
+    /// let mut t = Terminal::new(10, 5);
+    /// // Feed LF at the last row to trigger a full-screen scroll.
+    /// t.feed(b"\x1b[5;1H\x0A");
+    /// // scrollback_text(0) is the blank row that just scrolled off.
+    /// assert_eq!(t.grid().scrollback_text(0), Some(String::new()));
+    /// ```
+    #[must_use]
+    pub fn scrollback_text(&self, index: usize) -> Option<String> {
+        self.scrollback.text(index)
     }
 }
 

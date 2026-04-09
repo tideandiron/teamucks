@@ -960,4 +960,26 @@ impl Terminal {
             MouseMode::None
         }
     }
+
+    /// Return an immutable reference to the primary screen's scrollback buffer.
+    ///
+    /// The scrollback buffer captures rows that have scrolled off the top of
+    /// the primary screen during full-screen scroll operations.  Rows scrolled
+    /// within a partial region or on the alternate screen are not captured.
+    ///
+    /// Index `0` is the most recently captured row; index `len() - 1` is the
+    /// oldest.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use teamucks_vte::terminal::Terminal;
+    ///
+    /// let t = Terminal::new(80, 24);
+    /// assert!(t.scrollback().is_empty());
+    /// ```
+    #[must_use]
+    pub fn scrollback(&self) -> &crate::scrollback::ScrollbackBuffer {
+        self.state.grid.scrollback()
+    }
 }
