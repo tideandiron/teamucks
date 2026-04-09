@@ -2,6 +2,23 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::{cell::Cell, modes::ModeFlags, row::Row, style::PackedStyle};
 
+// ---------------------------------------------------------------------------
+// Alternate screen
+// ---------------------------------------------------------------------------
+
+/// State saved when entering the alternate screen buffer.
+///
+/// The primary screen's visible rows, cursor, and scroll region are stashed
+/// here so they can be restored verbatim when the alternate screen exits.
+struct AlternateState {
+    /// Saved visible rows of the primary screen.
+    visible: Vec<Row>,
+    /// Saved cursor of the primary screen.
+    cursor: Cursor,
+    /// Saved scroll region `(top, bottom)`, both inclusive, 0-indexed.
+    scroll_region: (usize, usize),
+}
+
 /// Cursor state within a [`Grid`].
 ///
 /// The cursor carries its own style (the current SGR attributes) so that
@@ -82,6 +99,12 @@ pub struct Grid {
     scroll_region: (usize, usize),
     /// Terminal mode flags (DECAWM, DECOM, DECTCEM, mouse modes, etc.).
     modes: ModeFlags,
+    /// Alternate screen state.
+    ///
+    /// `Some` only while the alternate screen is active.  `None` on the
+    /// primary screen.  We use `Box` so that the `None` case (the common
+    /// path) adds only a pointer word to `Grid`'s size.
+    alternate: Option<Box<AlternateState>>,
 }
 
 impl Grid {
@@ -109,6 +132,7 @@ impl Grid {
             saved_cursor: None,
             scroll_region: (0, rows - 1),
             modes,
+            alternate: None,
         }
     }
 
@@ -287,6 +311,30 @@ impl Grid {
 
         // Resize resets the scroll region to the full new screen.
         self.scroll_region = (0, rows - 1);
+
+        // When the alternate screen is active, also resize the saved primary
+        // screen so that exiting the alternate screen restores consistent
+        // dimensions.  No reflow is performed on the saved primary rows —
+        // reflow of the primary screen is Feature 12.
+        if let Some(alt) = &mut self.alternate {
+            for row in &mut alt.visible {
+                row.resize(cols);
+            }
+            if rows > alt.visible.len() {
+                let old_len = alt.visible.len();
+                for _ in old_len..rows {
+                    alt.visible.push(Row::new(cols));
+                }
+            } else {
+                alt.visible.truncate(rows);
+            }
+            alt.cursor.col = alt.cursor.col.min(cols - 1);
+            alt.cursor.row = alt.cursor.row.min(rows - 1);
+            // The saved primary scroll region is also updated to the full new
+            // screen so that after exit the region is always valid.
+            alt.scroll_region =
+                (alt.scroll_region.0.min(rows - 1), alt.scroll_region.1.min(rows - 1));
+        }
     }
 
     /// Clear the entire grid, resetting all cells to the default (space,
@@ -511,6 +559,87 @@ impl Grid {
     /// within `0..rows`.
     pub(crate) fn set_scroll_region(&mut self, top: usize, bottom: usize) {
         self.scroll_region = (top, bottom);
+    }
+
+    // -----------------------------------------------------------------------
+    // Alternate screen
+    // -----------------------------------------------------------------------
+
+    /// Return `true` when the alternate screen buffer is currently active.
+    ///
+    /// The alternate screen is entered via `CSI ? 1049 h` and exited via
+    /// `CSI ? 1049 l`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use teamucks_vte::terminal::Terminal;
+    ///
+    /// let mut t = Terminal::new(80, 24);
+    /// assert!(!t.grid().is_alternate_screen());
+    /// t.feed(b"\x1b[?1049h"); // enter alternate screen
+    /// assert!(t.grid().is_alternate_screen());
+    /// t.feed(b"\x1b[?1049l"); // exit alternate screen
+    /// assert!(!t.grid().is_alternate_screen());
+    /// ```
+    #[must_use]
+    pub fn is_alternate_screen(&self) -> bool {
+        self.alternate.is_some()
+    }
+
+    /// Switch to the alternate screen buffer.
+    ///
+    /// Steps performed:
+    /// 1. Save the current visible rows, cursor, and scroll region into
+    ///    [`AlternateState`].
+    /// 2. Replace the visible buffer with a fresh blank grid of the same
+    ///    dimensions.
+    /// 3. Reset the scroll region to the full screen.
+    /// 4. Move the cursor to `(0, 0)` and set `cursor.visible = true`.
+    ///
+    /// If the alternate screen is already active this is a no-op (no stacking).
+    pub(crate) fn enter_alternate_screen(&mut self) {
+        // No-op if already in alternate screen — do not stack.
+        if self.alternate.is_some() {
+            return;
+        }
+
+        // Save primary screen state.  Row and Cell are hot-path types that
+        // forbid Clone; use snapshot() which makes the allocation cost explicit.
+        let saved_visible = self.visible.iter().map(Row::snapshot).collect();
+        let saved = AlternateState {
+            visible: saved_visible,
+            cursor: self.cursor.clone(),
+            scroll_region: self.scroll_region,
+        };
+        self.alternate = Some(Box::new(saved));
+
+        // Replace visible with a fresh blank grid.
+        self.visible = (0..self.rows).map(|_| Row::new(self.cols)).collect();
+
+        // Reset scroll region to the full screen.
+        self.scroll_region = (0, self.rows - 1);
+
+        // Cursor goes to origin and is made visible.
+        self.cursor = Cursor { visible: true, ..Cursor::default() };
+    }
+
+    /// Exit the alternate screen buffer and restore the primary screen.
+    ///
+    /// Steps performed:
+    /// 1. Restore the saved visible rows, cursor, and scroll region from
+    ///    [`AlternateState`].
+    /// 2. Drop the alternate state.
+    ///
+    /// If the alternate screen is not active this is a no-op.
+    pub(crate) fn exit_alternate_screen(&mut self) {
+        let Some(saved) = self.alternate.take() else {
+            return;
+        };
+
+        self.visible = saved.visible;
+        self.cursor = saved.cursor;
+        self.scroll_region = saved.scroll_region;
     }
 
     // -----------------------------------------------------------------------

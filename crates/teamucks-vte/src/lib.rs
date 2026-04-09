@@ -26,3 +26,6 @@ pub mod terminal;
 
 #[cfg(test)]
 mod modes_tests;
+
+#[cfg(test)]
+mod alternate_screen_tests;

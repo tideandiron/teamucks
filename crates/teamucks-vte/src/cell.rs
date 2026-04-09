@@ -86,6 +86,19 @@ impl GraphemeStorage {
     pub(crate) fn space() -> Self {
         Self::Inline { bytes: [b' ', 0, 0, 0], len: 1 }
     }
+
+    /// Create an independent copy of this storage value.
+    ///
+    /// `GraphemeStorage` does not implement [`Clone`] because `Cell` is a
+    /// hot-path type subject to the no-cheap-clone policy.  This method makes
+    /// the allocation cost explicit at the alternate-screen snapshot call site.
+    #[must_use]
+    pub(crate) fn snapshot(&self) -> Self {
+        match self {
+            Self::Inline { bytes, len } => Self::Inline { bytes: *bytes, len: *len },
+            Self::Heap(s) => Self::Heap(s.clone()),
+        }
+    }
 }
 
 impl Default for GraphemeStorage {
@@ -211,6 +224,17 @@ impl Cell {
     /// Set or clear the continuation flag.
     pub(crate) fn set_continuation(&mut self, value: bool) {
         self.flags.set(CellFlags::CONTINUATION, value);
+    }
+
+    /// Create an independent copy of this cell.
+    ///
+    /// Used by the alternate screen buffer to snapshot the primary screen.
+    /// `Cell` does not implement [`Clone`] — it is a hot-path type subject to
+    /// the no-cheap-clone policy.  This method makes the allocation cost
+    /// explicit at each call site.
+    #[must_use]
+    pub(crate) fn snapshot(&self) -> Self {
+        Self { grapheme: self.grapheme.snapshot(), style: self.style, flags: self.flags }
     }
 
     /// Reset this cell to its default state: a space, default style, no flags.

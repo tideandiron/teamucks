@@ -102,6 +102,24 @@ impl Row {
         self.cells.resize_with(cols, Cell::default);
     }
 
+    /// Create an independent copy of this row.
+    ///
+    /// Used by the alternate screen buffer to snapshot and restore the
+    /// primary screen.  The copy is a fresh allocation with the same cell
+    /// contents and soft-wrap flag.
+    ///
+    /// `Row` deliberately does not implement [`Clone`] — it is a hot-path
+    /// type subject to the no-cheap-clone policy.  This method makes the
+    /// allocation cost explicit at each call site.
+    #[must_use]
+    pub(crate) fn snapshot(&self) -> Self {
+        let mut cells = Vec::with_capacity(self.cells.len());
+        for cell in &self.cells {
+            cells.push(cell.snapshot());
+        }
+        Self { cells, soft_wrapped: self.soft_wrapped }
+    }
+
     /// Reset all cells to their default state and clear the soft-wrap flag.
     ///
     /// The row retains its current width.

@@ -312,6 +312,31 @@ impl TerminalState {
     ///
     /// Unknown mode numbers are silently ignored, as required by the spec.
     fn apply_private_mode(&mut self, mode_num: u16, set: bool) {
+        // Mode 1049 — Alternate screen buffer — is handled separately because
+        // it involves swapping the full grid state rather than flipping a flag.
+        if mode_num == 1049 {
+            if set {
+                self.grid.enter_alternate_screen();
+                // Entering the alternate screen always makes the cursor visible.
+                // Mirror this into self.modes so that the flag stays consistent
+                // with grid.cursor().is_visible().
+                self.modes.insert(ModeFlags::CURSOR_VISIBLE);
+                self.modes.insert(ModeFlags::ALTERNATE_SCREEN);
+            } else {
+                self.grid.exit_alternate_screen();
+                self.modes.remove(ModeFlags::ALTERNATE_SCREEN);
+                // After restoring the primary screen, re-sync cursor visibility
+                // from the restored cursor state rather than forcing a value.
+                if self.grid.cursor().is_visible() {
+                    self.modes.insert(ModeFlags::CURSOR_VISIBLE);
+                } else {
+                    self.modes.remove(ModeFlags::CURSOR_VISIBLE);
+                }
+            }
+            self.grid.set_modes(self.modes);
+            return;
+        }
+
         let flag = match mode_num {
             1 => ModeFlags::CURSOR_KEYS_APPLICATION,
             6 => ModeFlags::ORIGIN,
