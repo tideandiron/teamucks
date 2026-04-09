@@ -374,7 +374,8 @@ impl SessionActor {
     /// Handle a new client connecting.
     ///
     /// Stores the [`ConnectedClient`], assigns focus if this is the first
-    /// client, and sends a [`ServerMessage::HandshakeResponse`].
+    /// client, sends a [`ServerMessage::HandshakeResponse`], and immediately
+    /// sends a [`ServerMessage::FullFrame`] for every pane in the active window.
     fn handle_new_client(
         &mut self,
         id: ClientId,
@@ -392,6 +393,7 @@ impl SessionActor {
 
         let client = ConnectedClient { id, cols, rows, tx };
 
+        // ── HandshakeResponse ─────────────────────────────────────────────────
         let response = ServerMessage::HandshakeResponse {
             protocol_version: PROTOCOL_VERSION,
             server_name: "teamucks".to_owned(),
@@ -401,6 +403,25 @@ impl SessionActor {
         // message.  We never block the actor on a single slow client.
         if let Err(e) = client.tx.try_send(response) {
             tracing::warn!(client_id = %id, error = %e, "failed to send HandshakeResponse");
+        }
+
+        // ── FullFrame for every visible pane in the active window ─────────────
+        // Collect pane IDs from the active window's layout tree.
+        let mut pane_ids = Vec::new();
+        self.session.active_window().layout().root.collect_ids(&mut pane_ids);
+
+        for pane_id in pane_ids {
+            if let Some(pane) = self.panes.get_mut(&pane_id) {
+                let full_frame = pane.full_frame();
+                if let Err(e) = client.tx.try_send(full_frame) {
+                    tracing::warn!(
+                        client_id = %id,
+                        pane_id = %pane_id,
+                        error = %e,
+                        "failed to send FullFrame to new client"
+                    );
+                }
+            }
         }
 
         self.clients.insert(id, client);
@@ -475,14 +496,53 @@ impl SessionActor {
         self.layout_dirty = true;
     }
 
-    /// Handle the render timer tick (stub).
+    /// Handle the render timer tick.
     ///
-    /// In this skeleton the render tick is a no-op.  Full frame diff
-    /// computation and broadcast will be implemented in Feature I3.
+    /// For each pane marked dirty since the last tick:
+    /// 1. Call [`Pane::compute_diff`] to produce an incremental
+    ///    [`ServerMessage::FrameDiff`] (or [`ServerMessage::CursorUpdate`] if
+    ///    only the cursor moved).
+    /// 2. `try_send` the message to every connected client.  Slow clients are
+    ///    never blocked — if their channel is full the diff is dropped and the
+    ///    next tick will produce a new diff.
+    ///
+    /// After processing all dirty panes the dirty set is cleared.
+    ///
+    /// # Resize limitation
+    ///
+    /// Terminal resize is not handled until Feature I14.  Resizing the host
+    /// terminal during branches I3–I13 will cause display corruption.
     fn handle_render_tick(&mut self) {
-        // Stub: clear dirty state.  Real rendering implemented in I3.
-        self.dirty_panes.clear();
+        if self.dirty_panes.is_empty() && !self.layout_dirty {
+            return;
+        }
+
+        // Collect dirty pane IDs into a local Vec so we can mutably borrow
+        // `self.panes` separately from `self.clients`.
+        let dirty: Vec<PaneId> = self.dirty_panes.drain().collect();
         self.layout_dirty = false;
+
+        for pane_id in dirty {
+            let Some(pane) = self.panes.get_mut(&pane_id) else {
+                // Pane was removed between the dirty mark and this tick.
+                continue;
+            };
+
+            let msg = pane.compute_diff();
+
+            // Broadcast to every connected client.  We never block on a slow
+            // client — if the channel is full we log at TRACE and move on.
+            for client in self.clients.values() {
+                if let Err(e) = client.tx.try_send(msg.clone()) {
+                    tracing::trace!(
+                        client_id = %client.id,
+                        pane_id = %pane_id,
+                        error = %e,
+                        "render tick: client channel full, diff dropped"
+                    );
+                }
+            }
+        }
     }
 
     /// Handle a graceful shutdown request (stub).

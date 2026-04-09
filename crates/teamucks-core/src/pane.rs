@@ -307,6 +307,29 @@ impl Pane {
         &self.terminal
     }
 
+    /// Return the raw file descriptor for the PTY master.
+    ///
+    /// Used to register the fd with a [`pty_reader`] task via
+    /// [`tokio::io::unix::AsyncFd`].  The returned value is only valid for as
+    /// long as this `Pane` is alive.
+    ///
+    /// [`pty_reader`]: crate::actor::pty_reader::pty_reader
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use teamucks_core::pane::{Pane, PaneId};
+    ///
+    /// let pane = Pane::spawn(PaneId(1), 80, 24, "/bin/sh", &[])
+    ///     .expect("spawn must succeed");
+    /// let fd = pane.pty_fd();
+    /// assert!(fd >= 0);
+    /// ```
+    #[must_use]
+    pub fn pty_fd(&self) -> std::os::unix::io::RawFd {
+        self.pty.as_raw_fd()
+    }
+
     /// Return this pane's unique identifier.
     #[must_use]
     pub fn id(&self) -> PaneId {
