@@ -1,0 +1,19 @@
+[package]
+name = "teamucks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A modern terminal multiplexer"
+
+[[bin]]
+name = "teamucks"
+path = "src/main.rs"
+
+[dependencies]
+teamucks-core = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }

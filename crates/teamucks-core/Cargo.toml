@@ -1,0 +1,21 @@
+[package]
+name = "teamucks-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Core multiplexer logic: sessions, layout, server, rendering"
+
+[dependencies]
+teamucks-vte = { workspace = true }
+teamucks-proto = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+nix = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

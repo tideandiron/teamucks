@@ -1,0 +1,10 @@
+[package]
+name = "teamucks-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Protocol buffer definitions for the teamucks content inspection API"
+
+[dependencies]
+# prost will be added in Phase 3
