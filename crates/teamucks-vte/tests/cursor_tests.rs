@@ -401,3 +401,49 @@ fn test_vpa_zero_treated_as_default() {
     let t = term(b"\x1b[10;1H\x1b[0d");
     assert_eq!(t.grid().cursor_row(), 0, "0 treated as default 1 → row 0");
 }
+
+// ---------------------------------------------------------------------------
+// Zero-param default behaviour for CUD, CUF, CUB, CNL, CPL
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cud_zero_means_one() {
+    let mut t = Terminal::new(80, 24);
+    t.feed(b"\x1b[5;5H"); // move to (4,4)
+    t.feed(b"\x1b[0B"); // CUD with 0 = default 1
+    assert_eq!(t.grid().cursor_row(), 5);
+}
+
+#[test]
+fn test_cuf_zero_means_one() {
+    let mut t = Terminal::new(80, 24);
+    t.feed(b"\x1b[5;5H");
+    t.feed(b"\x1b[0C"); // CUF with 0 = default 1
+    assert_eq!(t.grid().cursor_col(), 5);
+}
+
+#[test]
+fn test_cub_zero_means_one() {
+    let mut t = Terminal::new(80, 24);
+    t.feed(b"\x1b[5;5H");
+    t.feed(b"\x1b[0D"); // CUB with 0 = default 1
+    assert_eq!(t.grid().cursor_col(), 3);
+}
+
+#[test]
+fn test_cnl_zero_means_one() {
+    let mut t = Terminal::new(80, 24);
+    t.feed(b"\x1b[5;5H");
+    t.feed(b"\x1b[0E"); // CNL with 0 = default 1
+    assert_eq!(t.grid().cursor_row(), 5);
+    assert_eq!(t.grid().cursor_col(), 0);
+}
+
+#[test]
+fn test_cpl_zero_means_one() {
+    let mut t = Terminal::new(80, 24);
+    t.feed(b"\x1b[5;5H");
+    t.feed(b"\x1b[0F"); // CPL with 0 = default 1
+    assert_eq!(t.grid().cursor_row(), 3);
+    assert_eq!(t.grid().cursor_col(), 0);
+}
