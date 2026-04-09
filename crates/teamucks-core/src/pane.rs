@@ -14,6 +14,71 @@
 /// - [`Pane::try_reap`] — non-blocking waitpid.
 use teamucks_vte::terminal::Terminal;
 
+// ---------------------------------------------------------------------------
+// ExitBehavior / ExitAction
+// ---------------------------------------------------------------------------
+
+/// What to do when a pane's child process exits.
+///
+/// `Respawn` is reserved for a future feature (not yet implemented).
+///
+/// # Examples
+///
+/// ```
+/// use teamucks_core::pane::{ExitBehavior, ExitAction};
+///
+/// let action = ExitBehavior::Close.on_exit(0);
+/// assert!(matches!(action, ExitAction::Close));
+///
+/// let action = ExitBehavior::Hold.on_exit(1);
+/// assert!(matches!(action, ExitAction::Hold { code: 1 }));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExitBehavior {
+    /// Close the pane automatically when the child exits (default).
+    #[default]
+    Close,
+    /// Keep the pane visible, displaying the exit status.
+    Hold,
+    /// Restart the command automatically (reserved; not yet implemented).
+    Respawn,
+}
+
+impl ExitBehavior {
+    /// Compute the [`ExitAction`] for the given exit code.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use teamucks_core::pane::{ExitBehavior, ExitAction};
+    ///
+    /// assert!(matches!(ExitBehavior::Close.on_exit(0), ExitAction::Close));
+    /// assert!(matches!(ExitBehavior::Hold.on_exit(42), ExitAction::Hold { code: 42 }));
+    /// ```
+    #[must_use]
+    pub fn on_exit(self, code: i32) -> ExitAction {
+        match self {
+            Self::Close => ExitAction::Close,
+            // Respawn is deferred; treat as Hold until implemented.
+            Self::Hold | Self::Respawn => ExitAction::Hold { code },
+        }
+    }
+}
+
+/// The action to take after a pane's child process exits.
+///
+/// Produced by [`ExitBehavior::on_exit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitAction {
+    /// Remove the pane from its window.
+    Close,
+    /// Keep the pane alive, showing the exit code.
+    Hold {
+        /// The exit code of the process.
+        code: i32,
+    },
+}
+
 use crate::{
     protocol::{CellData, ColorData, ServerMessage},
     pty::{ChildProcess, ExitStatus, PtyError, PtyMaster},

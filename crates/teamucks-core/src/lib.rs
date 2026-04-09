@@ -12,4 +12,6 @@ pub mod protocol;
 pub mod pty;
 pub mod render;
 pub mod server;
+pub mod session;
 pub mod signal;
+pub mod window;
