@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "A modern terminal multiplexer"
+publish = false
 
 [[bin]]
 name = "teamucks"

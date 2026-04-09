@@ -14,9 +14,9 @@ rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-teamucks-vte = { path = "crates/teamucks-vte" }
-teamucks-proto = { path = "crates/teamucks-proto" }
-teamucks-core = { path = "crates/teamucks-core" }
+teamucks-vte = { path = "crates/teamucks-vte", version = "0.1.0" }
+teamucks-proto = { path = "crates/teamucks-proto", version = "0.1.0" }
+teamucks-core = { path = "crates/teamucks-core", version = "0.1.0" }
 thiserror = "2"
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
