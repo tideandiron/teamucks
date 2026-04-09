@@ -30,7 +30,7 @@ use crate::{
 /// Holds the grid and all other state that [`Performer`] callbacks need to
 /// mutate.  This is kept separate from [`Terminal`] so that the parser can
 /// borrow it mutably while the caller still has access to the parser.
-pub struct TerminalState {
+pub(crate) struct TerminalState {
     grid: Grid,
     title: String,
 }
@@ -44,6 +44,9 @@ impl TerminalState {
     ///
     /// Processes the parameter list left-to-right, consuming sub-parameters
     /// for extended colours (38/48) as needed.
+    // This is a flat SGR dispatch table analogous to `perform_action` in the
+    // parser; the length is inherent to the standard, not a design smell.
+    #[allow(clippy::too_many_lines)]
     fn apply_sgr(&mut self, params: &[u16]) {
         // An empty parameter list is equivalent to a single zero (reset).
         if params.is_empty() {
@@ -104,9 +107,8 @@ impl TerminalState {
                     if let Some(color) = Self::parse_extended_color(params, &mut i) {
                         self.grid.cursor_mut().style.set_foreground(color);
                     }
-                    // If parsing failed (missing sub-params), the index has not
-                    // advanced past what was consumed; the while loop's i += 1
-                    // will move past code 38 itself.
+                    // On failure, parse_extended_color still advances `i` past
+                    // the sub-type byte, so the outer `i += 1` lands correctly.
                 }
 
                 // ── Default foreground ────────────────────────────────────
@@ -154,44 +156,53 @@ impl TerminalState {
     /// Parse an extended colour sub-sequence starting *after* the 38 or 48
     /// code.
     ///
-    /// - `38;5;N`   → `Color::Indexed(N)`
+    /// - `38;5;N`     → `Color::Indexed(N)`
     /// - `38;2;R;G;B` → `Color::Rgb(R, G, B)`
     ///
-    /// `i` is the index of the **38/48** code itself in `params`.  If parsing
-    /// succeeds, `i` is advanced so that the outer loop's `i += 1` lands on
-    /// the first param *after* the consumed sub-sequence.
+    /// `i` is the index of the **38/48** code itself in `params`.  On return
+    /// (success *or* failure), `i` is advanced past every sub-parameter that
+    /// was inspected, so that the outer loop's `i += 1` lands on the first
+    /// param after the consumed sub-sequence and no byte is misread as a
+    /// standalone SGR code.
     ///
-    /// Returns `None` without advancing `i` if sub-params are missing or the
-    /// sub-type is unrecognised.
+    /// Returns `None` if sub-params are missing or the sub-type is
+    /// unrecognised; `i` is still advanced past the sub-type byte in that
+    /// case.
     fn parse_extended_color(params: &[u16], i: &mut usize) -> Option<Color> {
         // Need at least one more param (the sub-type).
         let sub = *params.get(*i + 1)?;
 
+        // Always advance past the sub-type byte.  This ensures that even when
+        // the remaining params are absent (malformed sequence), the sub-type
+        // is not re-interpreted as a standalone SGR code by the outer loop.
+        *i += 1;
+
         match sub {
-            // 256-colour indexed: consume sub-type + index.
+            // 256-colour indexed: consume index.
             5 => {
-                let idx_raw = *params.get(*i + 2)?;
+                let idx_raw = *params.get(*i + 1)?;
                 // idx_raw is a u16 parameter; clamp to u8 for the index.
                 #[allow(clippy::cast_possible_truncation)]
                 let idx = idx_raw.min(255) as u8;
-                *i += 2; // skip sub-type + index
+                *i += 1; // skip index
                 Some(Color::Indexed(idx))
             }
-            // RGB true colour: consume sub-type + R + G + B.
+            // RGB true colour: consume R + G + B.
             2 => {
-                let r_raw = *params.get(*i + 2)?;
-                let g_raw = *params.get(*i + 3)?;
-                let b_raw = *params.get(*i + 4)?;
+                let r_raw = *params.get(*i + 1)?;
+                let g_raw = *params.get(*i + 2)?;
+                let b_raw = *params.get(*i + 3)?;
                 #[allow(clippy::cast_possible_truncation)]
                 let r = r_raw.min(255) as u8;
                 #[allow(clippy::cast_possible_truncation)]
                 let g = g_raw.min(255) as u8;
                 #[allow(clippy::cast_possible_truncation)]
                 let b = b_raw.min(255) as u8;
-                *i += 4; // skip sub-type + R + G + B
+                *i += 3; // skip R + G + B
                 Some(Color::Rgb(r, g, b))
             }
             // Unknown sub-type — silently ignore the whole extended sequence.
+            // `i` has already been advanced past the sub-type above.
             _ => None,
         }
     }

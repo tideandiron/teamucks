@@ -422,18 +422,26 @@ fn test_sgr_bold_persists_across_chars() {
 #[test]
 fn test_sgr_extended_color_invalid_missing_index() {
     // "\x1b[38;5m" — 5 subcommand with no following index.
-    // Must not panic and must leave terminal in a consistent state.
+    // Must not panic, must leave terminal in a consistent state, and — most
+    // importantly — must NOT spuriously set BLINK (SGR 5) as a side-effect of
+    // the malformed sequence leaking the sub-type byte back into the parser.
     let t = term(b"\x1b[38;5mA");
-    // After writing 'A', cell (0,0) should exist and be 'A'.
     assert_eq!(t.grid().cell(0, 0).grapheme(), "A");
+    let style = t.grid().cell(0, 0).style();
+    assert_eq!(style.attrs(), Attr::empty(), "no spurious BLINK from malformed 38;5 sequence");
+    assert_eq!(style.foreground(), Color::Default, "foreground must remain default");
 }
 
 #[test]
 fn test_sgr_extended_color_invalid_wrong_subtype() {
     // "\x1b[38;9m" — unknown sub-type (not 2 or 5).
-    // Must not panic.
+    // Must not panic and must not spuriously apply any attribute for the
+    // unknown sub-type byte (9 = STRIKETHROUGH if misread as standalone SGR).
     let t = term(b"\x1b[38;9mA");
     assert_eq!(t.grid().cell(0, 0).grapheme(), "A");
+    let style = t.grid().cell(0, 0).style();
+    assert_eq!(style.attrs(), Attr::empty(), "no spurious attrs from unknown sub-type");
+    assert_eq!(style.foreground(), Color::Default, "foreground must remain default");
 }
 
 #[test]
