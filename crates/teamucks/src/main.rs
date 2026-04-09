@@ -1,3 +1,6 @@
+#![deny(clippy::all, clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
+
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -18,11 +21,15 @@ enum Command {
     List,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     tracing::info!("teamucks starting");
-    drop(cli);
-    println!("teamucks: not yet implemented");
-    Ok(())
+    match cli.command {
+        None => println!("teamucks: not yet implemented"),
+        Some(Command::Attach { session }) => {
+            println!("teamucks: attach not yet implemented (session: {session:?})");
+        }
+        Some(Command::List) => println!("teamucks: list not yet implemented"),
+    }
 }
