@@ -427,17 +427,39 @@ impl SessionActor {
         self.clients.insert(id, client);
     }
 
-    /// Handle input from a connected client (stub).
+    /// Handle input from a connected client.
     ///
     /// Only the focused client drives the input state machine.  All other
-    /// client input is silently dropped in this skeleton implementation.
+    /// client input is silently dropped.
+    ///
+    /// For [`ClientMessage::KeyEvent`], the raw bytes are forwarded directly
+    /// to the active pane's PTY via [`Pane::write_input`].  Full prefix-key
+    /// routing (the `InputStateMachine`) is wired in Feature I7.
     fn handle_client_input(&mut self, id: ClientId, message: &ClientMessage) {
         tracing::debug!(client_id = %id, "client input");
         if self.focused_client != Some(id) {
             return;
         }
-        // Full input routing implemented in subsequent integration features.
-        let _ = message;
+
+        if let ClientMessage::KeyEvent { key, .. } = message {
+            // Determine the active pane for the focused session window.
+            let active_pane_id = self.session.active_window().active_pane_id();
+
+            if let Some(pane) = self.panes.get(&active_pane_id) {
+                if let Err(e) = pane.write_input(key) {
+                    // PTY write failure is logged but not propagated — the
+                    // child may have exited; the pty_reader will send PaneDied.
+                    tracing::warn!(
+                        pane_id = %active_pane_id,
+                        error = %e,
+                        "failed to write key input to pane PTY"
+                    );
+                }
+            } else {
+                tracing::debug!(pane_id = %active_pane_id, "active pane not found — input dropped");
+            }
+        }
+        // MouseEvent, Resize, Command, PasteEvent: handled in subsequent features (I6+).
     }
 
     /// Handle a client disconnecting.

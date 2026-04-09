@@ -17,6 +17,8 @@ use teamucks_core::{
 };
 use tokio::sync::mpsc;
 
+use teamucks::client::{in_process_input_reader, in_process_output_writer};
+
 #[derive(Parser, Debug)]
 #[command(name = "teamucks", about = "A modern terminal multiplexer")]
 struct Cli {
@@ -67,7 +69,7 @@ fn main() {
 
 /// Start the server in the foreground using a new tokio runtime.
 ///
-/// Startup flow (Feature I3 + I4):
+/// Startup flow (Feature I3–I5):
 /// 1. Enter raw mode on stdin and write the alternate screen enter sequence.
 /// 2. Install `TerminalGuard` (RAII restore on drop, including panics).
 /// 3. Install panic hook that restores the terminal before printing panic info.
@@ -78,9 +80,12 @@ fn main() {
 /// 8. Create an in-process client channel pair.
 /// 9. Spawn the session actor task.
 /// 10. Send `NewClient` to the actor so it emits `HandshakeResponse` + `FullFrame`.
-/// 11. Block on the in-process client receiver, logging received frames.
-///     Full rendering (I5) will replace the logging once the terminal renderer
-///     is wired in.
+/// 11. Spawn `in_process_output_writer` — renders frames to stdout via
+///     `TerminalRenderer` and writes escape sequences directly to fd 1.
+/// 12. Spawn `in_process_input_reader` — reads raw stdin bytes and forwards
+///     them to the actor as `ClientMessage::KeyEvent`.
+///
+/// After step 12 the user sees a live interactive shell in the alternate screen.
 ///
 /// # Resize limitation
 ///
@@ -163,7 +168,7 @@ fn start_server(server_name: &str, config: &teamucks_core::config::types::Valida
 
         // ── 5. Create in-process client channel ───────────────────────────────
         let in_process_id = ClientId::next();
-        let (to_client_tx, mut to_client_rx) = mpsc::channel::<ServerMessage>(64);
+        let (to_client_tx, to_client_rx) = mpsc::channel::<ServerMessage>(64);
 
         // ── 6. Spawn session actor ────────────────────────────────────────────
         let actor = SessionActor::new(
@@ -190,34 +195,35 @@ fn start_server(server_name: &str, config: &teamucks_core::config::types::Valida
 
         tracing::info!(client_id = %in_process_id, "in-process client registered");
 
-        // ── 8. Drive the in-process client receiver ───────────────────────────
-        // Full rendering (I5) will write frames to stdout via TerminalRenderer.
-        // For now we log each ServerMessage at DEBUG level so the actor exercise
-        // is observable without a real screen.
-        //
-        // The loop exits when the actor shuts down and closes the sender.
-        while let Some(msg) = to_client_rx.recv().await {
-            match &msg {
-                ServerMessage::HandshakeResponse { protocol_version, server_name } => {
-                    tracing::debug!(protocol_version, server_name, "handshake response received");
-                }
-                ServerMessage::FullFrame { pane_id, cols, rows, .. } => {
-                    tracing::debug!(pane_id, cols, rows, "full frame received");
-                }
-                ServerMessage::FrameDiff { pane_id, diffs } => {
-                    tracing::debug!(pane_id, diffs = diffs.len(), "frame diff received");
-                }
-                ServerMessage::CursorUpdate { pane_id, col, row, visible, .. } => {
-                    tracing::debug!(pane_id, col, row, visible, "cursor update received");
-                }
-                other => {
-                    tracing::debug!(?other, "server message received");
-                }
-            }
-        }
+        // ── 8. Spawn output writer task ───────────────────────────────────────
+        // The output writer owns TerminalRenderer and writes escape sequences
+        // directly to stdout (fd 1) via tokio::io::stdout().  It exits when
+        // the actor closes the sender (i.e. the actor shuts down).
+        let stdout = tokio::io::stdout();
+        let output_handle =
+            tokio::spawn(in_process_output_writer(to_client_rx, stdout, cols, total_rows));
 
-        tracing::info!("in-process client channel closed — server shutting down");
-        // Wait for the actor task to finish.
+        // ── 9. Spawn input reader task ────────────────────────────────────────
+        // The input reader forwards raw stdin bytes to the actor.  It runs
+        // until stdin reaches EOF or the actor channel closes.
+        let input_actor_tx = actor_tx.clone();
+        let input_handle = tokio::spawn(in_process_input_reader(input_actor_tx, in_process_id));
+
+        tracing::info!("in-process client tasks spawned — interactive shell active");
+
+        // ── 10. Wait for actor and I/O tasks to finish ───────────────────────
+        // The output writer exits when the actor shuts down (channel closes).
+        // The input reader exits when stdin reaches EOF or the actor closes.
+        // We wait for the actor first; the I/O tasks will then observe their
+        // channels / fds closing and exit on their own.
         let _ = actor_handle.await;
+        tracing::info!("in-process client channel closed — server shutting down");
+
+        // Abort the input reader so it does not block process exit while
+        // waiting for stdin input.  Aborting is safe here: the actor is
+        // already done, and the only effect is that a pending `stdin.read`
+        // is cancelled.
+        input_handle.abort();
+        let _ = output_handle.await;
     });
 }
