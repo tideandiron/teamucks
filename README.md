@@ -4,13 +4,13 @@ A terminal multiplexer for 2026+. Priorities: correctness > performance > AI-nat
 
 ## Status
 
-**Early development.** Features 1–4 have shipped. Feature 1 (Workspace Scaffold), Feature 2 (VTE Parser Core), Feature 3 (Cell Model & Grid), and Feature 4 (SGR Attributes) are complete. The VTE crate now has an end-to-end rendering pipeline: terminal byte stream parsing produces a styled grid of cells with full text attributes (bold, italic, underline, colors), control character handling, and OSC title setting. The binary compiles and accepts commands. Multiplexing and the server are not yet implemented. This is not yet usable as a terminal application.
+**Phase 1 complete: VTE crate feature-complete with 457 tests.** The terminal emulator library now fully parses and renders terminal output with all Priority 1 escape sequences, scrollback, content reflow, and property tests. Next: multiplexer infrastructure (Phase 2).
 
 ## Architecture
 
 The workspace consists of four Rust crates:
 
-- **teamucks-vte** — Virtual terminal emulator library. Implements a Paul Flo Williams state machine for VTE parsing (UTF-8, CSI, ESC, OSC, DCS) and a `Terminal` struct that connects the parser to the rendering grid. Supports full SGR (Select Graphic Rendition) — all text attributes, 16 named colors, 256-color indexed, and 24-bit RGB. Includes 217 tests across the crate. Zero unsafe code. Includes property tests and fuzzing. Will publish to crates.io.
+- **teamucks-vte** — Complete terminal emulator library. Parses terminal byte streams using a Paul Flo Williams state machine (UTF-8, CSI, ESC, OSC, DCS), renders to a grid with full SGR support (all attributes, 16/256/24-bit colors), handles all Priority 1 escape sequences (cursor, erase, scroll regions, modes, alternate screen, tabs, charsets), manages scrollback with configurable capacity, and reflows content on resize. 457 tests, property tests, fuzz targets. Zero unsafe code. Publishing to crates.io.
 - **teamucks-proto** — Protobuf API definitions for the content inspection interface. Stubbed.
 - **teamucks-core** — Domain model, server, layout engine, and rendering logic.
 - **teamucks** — Single binary that embeds server and client.

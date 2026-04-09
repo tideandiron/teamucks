@@ -84,8 +84,11 @@ mod tests {
     /// This test is skipped if running as root (CI with --privileged).
     #[test]
     fn test_send_sigwinch_to_pid1_eperm() {
-        // SAFETY: geteuid(2) is always safe to call; it has no preconditions.
-        if unsafe { libc::geteuid() } == 0 {
+        // Skip when running as root (e.g. CI with --privileged).
+        // SAFETY: geteuid(2) is always safe — no preconditions, no side effects.
+        // Used in test code only; nix::unistd::getuid() requires the "user" feature.
+        let euid = unsafe { libc::geteuid() };
+        if euid == 0 {
             return; // skip when privileged
         }
         let result = send_sigwinch(Pid::from_raw(1));
