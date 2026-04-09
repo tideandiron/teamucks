@@ -12,6 +12,7 @@ teamucks-proto = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 nix = { workspace = true }
+libc = "0.2"
 bytes = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
@@ -19,3 +20,4 @@ anyhow = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+libc = "0.2"

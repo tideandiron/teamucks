@@ -4,3 +4,6 @@
 //! teamucks-core: Core multiplexer logic.
 //!
 //! Sessions, windows, panes, layout engine, server daemon, client protocol.
+
+pub mod pty;
+pub mod signal;
