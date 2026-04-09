@@ -7,10 +7,6 @@ license.workspace = true
 description = "A correct, high-performance virtual terminal emulator library"
 
 [dependencies]
-bitflags = { workspace = true }
-unicode-width = { workspace = true }
-unicode-segmentation = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -28,8 +28,8 @@
 //! assert_eq!(rec.printed, ['h', 'e', 'l', 'l', 'o']);
 //! ```
 
-pub mod action;
-pub mod table;
+pub(crate) mod action;
+pub(crate) mod table;
 
 use table::{transition, State};
 
@@ -37,6 +37,18 @@ use crate::params::Params;
 
 /// Maximum number of intermediate bytes buffered per sequence.
 const MAX_INTERMEDIATES: usize = 2;
+
+/// Maximum number of bytes accumulated in the OSC buffer.
+///
+/// Bytes beyond this limit are silently dropped to prevent denial-of-service
+/// memory exhaustion. The parser does not transition to an error state.
+const MAX_OSC_LEN: usize = 65_536;
+
+/// Maximum number of bytes accumulated in the DCS passthrough buffer.
+///
+/// Bytes beyond this limit are silently dropped to prevent denial-of-service
+/// memory exhaustion. The parser does not transition to an error state.
+const MAX_DCS_LEN: usize = 65_536;
 
 /// Trait implemented by the caller to receive parsed VTE events.
 ///
@@ -354,7 +366,10 @@ impl Parser {
             }
 
             Action::Put => {
-                self.dcs_data.push(byte);
+                if self.dcs_data.len() < MAX_DCS_LEN {
+                    self.dcs_data.push(byte);
+                }
+                // Silently drop bytes that exceed MAX_DCS_LEN.
             }
 
             Action::Unhook => {
@@ -386,9 +401,10 @@ impl Parser {
                 if byte == b';' {
                     // Record split point.
                     self.osc_params_idx.push(self.osc_buffer.len());
-                } else {
+                } else if self.osc_buffer.len() < MAX_OSC_LEN {
                     self.osc_buffer.push(byte);
                 }
+                // Silently drop bytes that exceed MAX_OSC_LEN.
             }
 
             Action::OscEnd => {
@@ -612,6 +628,23 @@ mod unit_tests {
         assert_eq!(rec.csi.len(), 1);
         // Only first MAX_PARAMS (16) are kept.
         assert_eq!(rec.csi[0].0.len(), crate::params::MAX_PARAMS);
+    }
+
+    #[test]
+    fn test_parser_osc_buffer_cap() {
+        // Feed an OSC string that is much longer than MAX_OSC_LEN.
+        // The parser must not grow the buffer beyond MAX_OSC_LEN and must not
+        // panic.
+        let mut input = Vec::with_capacity(MAX_OSC_LEN * 2 + 8);
+        input.extend_from_slice(b"\x1b]0;");
+        // Fill with 'x' bytes well beyond the cap.
+        input.resize(MAX_OSC_LEN * 2 + 4, b'x');
+        input.push(0x07); // BEL terminator
+        let rec = parse(&input);
+        // The OSC must still be dispatched (capped, not dropped entirely).
+        assert_eq!(rec.osc.len(), 1);
+        // The second param (the title) must be capped at MAX_OSC_LEN.
+        assert!(rec.osc[0][1].len() <= MAX_OSC_LEN);
     }
 
     #[test]

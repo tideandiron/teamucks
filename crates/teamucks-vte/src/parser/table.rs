@@ -184,8 +184,8 @@ pub fn transition(state: State, byte: u8) -> (Action, State) {
         // Escape; from there, b'\\' triggers EscDispatch while `prev_state` is
         // OscString — the Parser uses that to detect the ST terminator.
         State::OscString => match byte {
-            // BEL terminates the OSC string.
-            0x07 => (Action::OscEnd, State::Ground),
+            // BEL or C1 ST (0x9C) terminate the OSC string.
+            0x07 | 0x9C => (Action::OscEnd, State::Ground),
             // Printable ASCII and high bytes are accumulated.
             0x20..=0x7E | 0xA0..=0xFF => (Action::OscPut, State::OscString),
             // Everything else (control bytes, dead branches) is ignored.

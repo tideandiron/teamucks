@@ -11,6 +11,7 @@ pub enum Action {
     /// Execute a C0 or C1 control function.
     Execute,
     /// Clear the parameter accumulator and intermediates.
+    #[allow(dead_code)]
     Clear,
     /// Collect an intermediate byte (0x20–0x2F) into the intermediate buffer.
     Collect,

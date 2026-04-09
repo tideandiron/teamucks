@@ -201,6 +201,19 @@ fn test_parser_mixed_content() {
     assert_eq!(rec.csi[1].2, b'm');
 }
 
+// ── C1 control tests ────────────────────────────────────────────────────────
+
+#[test]
+fn test_parser_osc_c1_st_terminator() {
+    // OSC terminated by C1 ST (0x9C) instead of BEL or ESC \
+    let mut parser = Parser::new();
+    let mut recorder = Recorder::default();
+    parser.advance(&mut recorder, b"\x1b]0;title\x9c");
+    assert_eq!(recorder.osc.len(), 1);
+    assert_eq!(recorder.osc[0][0], b"0");
+    assert_eq!(recorder.osc[0][1], b"title");
+}
+
 // ── Additional edge-case tests ───────────────────────────────────────────────
 
 #[test]
@@ -384,6 +397,29 @@ fn test_parser_long_csi_param_string() {
     assert_eq!(rec.csi[0].0.len(), 16);
     assert_eq!(&rec.csi[0].0[..4], &[1u16, 2, 3, 4]);
     assert_eq!(rec.csi[0].0[15], 16);
+}
+
+// ── Buffer cap tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_parser_osc_buffer_does_not_grow_unboundedly() {
+    // Feed an OSC string with 200 000 bytes of payload — well above the
+    // 65 536-byte cap. The parser must not panic and the dispatched param
+    // must be capped, not the full 200 000 bytes.
+    const PAYLOAD_LEN: usize = 200_000;
+    let mut input = Vec::with_capacity(PAYLOAD_LEN + 8);
+    input.extend_from_slice(b"\x1b]0;");
+    input.resize(input.len() + PAYLOAD_LEN, b'x');
+    input.push(0x07); // BEL terminator
+
+    let rec = parse(&input);
+    assert_eq!(rec.osc.len(), 1, "OSC must be dispatched even when capped");
+    // The accumulated title bytes must not exceed the cap.
+    assert!(
+        rec.osc[0][1].len() <= 65_536,
+        "OSC buffer must be capped at 65 536 bytes, got {}",
+        rec.osc[0][1].len()
+    );
 }
 
 // ── Property-based tests ─────────────────────────────────────────────────────
