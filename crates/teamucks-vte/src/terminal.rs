@@ -356,6 +356,52 @@ impl Performer for TerminalState {
                 self.grid.set_cursor(self.grid.cursor_col(), row);
             }
 
+            // ED — Erase in Display (CSI n J).
+            //
+            // Erased cells always receive the default style, not the cursor's
+            // current SGR style.  The cursor position is not changed.
+            b'J' => {
+                // `param` substitutes 0 for absent/zero, so default is already 0.
+                match params.first().copied().unwrap_or(0) {
+                    // 0 or default: erase from cursor to end of screen.
+                    0 => self.grid.erase_below(),
+                    // 1: erase from start of screen to cursor.
+                    1 => self.grid.erase_above(),
+                    // 2: erase entire visible screen.
+                    2 => self.grid.erase_all(),
+                    // 3: erase scrollback buffer — no-op for Phase 1 (scrollback
+                    // not yet implemented). Also catches unknown parameters.
+                    _ => {}
+                }
+            }
+
+            // EL — Erase in Line (CSI n K).
+            //
+            // Erased cells always receive the default style.  The cursor
+            // position is not changed.
+            b'K' => {
+                match params.first().copied().unwrap_or(0) {
+                    // 0 or default: erase from cursor to end of line.
+                    0 => self.grid.erase_line_right(),
+                    // 1: erase from start of line to cursor.
+                    1 => self.grid.erase_line_left(),
+                    // 2: erase entire current line.
+                    2 => self.grid.erase_line_all(),
+                    // Unknown parameter — silently ignore.
+                    _ => {}
+                }
+            }
+
+            // ECH — Erase Characters (CSI n X).
+            //
+            // Erases `n` characters starting at the cursor, clamped at the
+            // end of the current line.  The cursor position is not changed.
+            b'X' => {
+                // Default count is 1 when the parameter is absent or zero.
+                let count = param(params, 0, 1) as usize;
+                self.grid.erase_chars(count);
+            }
+
             // All other CSI sequences are silently ignored until later features.
             _ => {}
         }

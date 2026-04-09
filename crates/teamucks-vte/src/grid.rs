@@ -432,6 +432,141 @@ impl Grid {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Erase operations
+    // -----------------------------------------------------------------------
+
+    /// Erase every cell in `col_start..=col_end` on `row`, handling wide-char
+    /// cleanup at both boundaries.
+    ///
+    /// Wide-character pairs that straddle the boundaries are fully cleared: if
+    /// the leftmost erased column is a continuation half the leading half is
+    /// also cleared; if the rightmost erased column is a wide leading half the
+    /// trailing continuation is also cleared.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row >= rows` or `col_end >= cols`.
+    fn erase_range(&mut self, row: usize, col_start: usize, col_end: usize) {
+        if col_start > col_end {
+            return;
+        }
+        // Handle wide-char cleanup at the left boundary: if the first cell we
+        // are erasing is a continuation, clear the leading cell to the left.
+        if col_start > 0 && self.visible[row].cell(col_start).is_continuation() {
+            self.visible[row].cell_mut(col_start - 1).reset();
+        }
+        // Handle wide-char cleanup at the right boundary: if the last cell we
+        // are erasing is a wide leading half, clear the continuation to the right.
+        if col_end + 1 < self.cols && self.visible[row].cell(col_end).is_wide() {
+            self.visible[row].cell_mut(col_end + 1).reset();
+        }
+        // Reset every cell in the range.
+        for col in col_start..=col_end {
+            self.visible[row].cell_mut(col).reset();
+        }
+    }
+
+    /// Erase from cursor to end of screen (ED 0).
+    ///
+    /// Clears from the cursor position to the end of the cursor's row, then
+    /// all rows below the cursor row.  The cursor position is not changed.
+    pub(crate) fn erase_below(&mut self) {
+        let cur_col = self.cursor.col;
+        let cur_row = self.cursor.row;
+        let last_col = self.cols - 1;
+        let last_row = self.rows - 1;
+
+        // Erase from cursor to end of the current line.
+        self.erase_range(cur_row, cur_col, last_col);
+
+        // Erase all rows below the cursor row.
+        for row in (cur_row + 1)..=last_row {
+            self.erase_range(row, 0, last_col);
+        }
+    }
+
+    /// Erase from start of screen to cursor (ED 1).
+    ///
+    /// Clears all rows above the cursor row, then from the start of the cursor
+    /// row to and including the cursor position.  The cursor position is not
+    /// changed.
+    pub(crate) fn erase_above(&mut self) {
+        let cur_col = self.cursor.col;
+        let cur_row = self.cursor.row;
+        let last_col = self.cols - 1;
+
+        // Erase all rows above the cursor row.
+        for row in 0..cur_row {
+            self.erase_range(row, 0, last_col);
+        }
+
+        // Erase from start of current line to cursor position (inclusive).
+        if cur_col > 0 {
+            self.erase_range(cur_row, 0, cur_col);
+        } else {
+            self.erase_range(cur_row, 0, 0);
+        }
+    }
+
+    /// Erase the entire visible screen (ED 2).
+    ///
+    /// All cells are reset to the default.  The cursor position is not changed.
+    pub(crate) fn erase_all(&mut self) {
+        let last_col = self.cols - 1;
+        let last_row = self.rows - 1;
+        for row in 0..=last_row {
+            self.erase_range(row, 0, last_col);
+        }
+    }
+
+    /// Erase from cursor to end of the current line (EL 0).
+    ///
+    /// The cursor position is not changed.
+    pub(crate) fn erase_line_right(&mut self) {
+        let cur_col = self.cursor.col;
+        let cur_row = self.cursor.row;
+        let last_col = self.cols - 1;
+        self.erase_range(cur_row, cur_col, last_col);
+    }
+
+    /// Erase from start of the current line to cursor (EL 1).
+    ///
+    /// The cursor position is not changed.
+    pub(crate) fn erase_line_left(&mut self) {
+        let cur_col = self.cursor.col;
+        let cur_row = self.cursor.row;
+        self.erase_range(cur_row, 0, cur_col);
+    }
+
+    /// Erase the entire current line (EL 2).
+    ///
+    /// The cursor position is not changed.
+    pub(crate) fn erase_line_all(&mut self) {
+        let cur_row = self.cursor.row;
+        let last_col = self.cols - 1;
+        self.erase_range(cur_row, 0, last_col);
+    }
+
+    /// Erase `count` characters starting at the cursor position (ECH).
+    ///
+    /// Erased cells are reset to the default.  The erase range is clamped to
+    /// the end of the current line — it does not wrap to the next line.  The
+    /// cursor position is not changed.
+    ///
+    /// Wide characters that overlap the erase boundaries are fully cleaned up.
+    pub(crate) fn erase_chars(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let cur_col = self.cursor.col;
+        let cur_row = self.cursor.row;
+        let last_col = self.cols - 1;
+        // Clamp: erase at most up to the last column of the current line.
+        let end_col = (cur_col + count - 1).min(last_col);
+        self.erase_range(cur_row, cur_col, end_col);
+    }
+
     /// Return the plain-text content of row `row` with trailing spaces trimmed.
     ///
     /// Continuation cells (the second half of a wide character) are skipped so
