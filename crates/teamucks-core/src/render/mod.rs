@@ -21,6 +21,7 @@
 /// The renderer tracks the last-emitted style and only emits SGR sequences for
 /// attributes that differ from the previous cell.  This reduces output size for
 /// runs of cells with the same style.
+pub mod borders;
 pub mod diff;
 
 use teamucks_vte::style::Attr;
@@ -250,6 +251,59 @@ impl TerminalRenderer {
         &self.buf
     }
 
+    /// Render a slice of [`BorderCell`][borders::BorderCell] values to escape sequences.
+    ///
+    /// Emits a CUP + SGR color + character for each border cell.  Active border
+    /// cells use `accent_color`; inactive cells use `muted_color`.  Colors are
+    /// expressed as hex strings (`"#rrggbb"`).  If a color string cannot be
+    /// parsed it falls back to the terminal's default foreground color.
+    ///
+    /// The returned slice is valid until the next call to any `render_*` method.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use teamucks_core::render::TerminalRenderer;
+    /// use teamucks_core::render::borders::BorderCell;
+    ///
+    /// let mut r = TerminalRenderer::new();
+    /// let cells = [BorderCell { x: 5, y: 2, ch: '│', is_active_border: true }];
+    /// let out = r.render_borders(&cells, "#00aaff", "#555555");
+    /// assert!(!out.is_empty());
+    /// ```
+    pub fn render_borders<'a>(
+        &'a mut self,
+        borders: &[borders::BorderCell],
+        accent_color: &str,
+        muted_color: &str,
+    ) -> &'a [u8] {
+        self.buf.clear();
+
+        let accent = parse_hex_color(accent_color);
+        let muted = parse_hex_color(muted_color);
+
+        for cell in borders {
+            // CUP: position cursor at (col, row), 1-indexed.
+            self.emit_cup(usize::from(cell.x), usize::from(cell.y));
+
+            // SGR: foreground color — accent for active borders, muted for others.
+            let (r, g, b) = if cell.is_active_border { accent } else { muted };
+            write_buf(&mut self.buf, format_args!("\x1b[38;2;{r};{g};{b}m"));
+
+            // Encode the box-drawing character as UTF-8.
+            let mut char_buf = [0u8; 4];
+            let encoded = cell.ch.encode_utf8(&mut char_buf);
+            self.buf.extend_from_slice(encoded.as_bytes());
+        }
+
+        // Reset SGR to leave the terminal in a clean state.
+        if !borders.is_empty() {
+            self.buf.extend_from_slice(SGR_RESET);
+        }
+
+        &self.buf
+    }
+
     // ---------------------------------------------------------------------------
     // Private helpers
     // ---------------------------------------------------------------------------
@@ -401,6 +455,22 @@ fn write_buf(buf: &mut Vec<u8>, args: std::fmt::Arguments<'_>) {
     use std::io::Write as _;
     // Vec<u8> implements Write — write! never fails here.
     let _ = write!(buf, "{args}");
+}
+
+/// Parse a `#rrggbb` hex color string into `(r, g, b)` components.
+///
+/// Returns `(255, 255, 255)` (white) if the string cannot be parsed, so the
+/// renderer always emits a valid color sequence.
+#[inline]
+fn parse_hex_color(color: &str) -> (u8, u8, u8) {
+    let hex = color.strip_prefix('#').unwrap_or(color);
+    if hex.len() != 6 {
+        return (255, 255, 255);
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(255);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
+    (r, g, b)
 }
 
 // ---------------------------------------------------------------------------
