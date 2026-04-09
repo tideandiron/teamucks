@@ -2,6 +2,8 @@
 #![allow(clippy::module_name_repetitions)]
 
 use std::collections::HashMap;
+use std::io::Write as _;
+use std::os::fd::AsRawFd;
 
 use clap::Parser;
 use teamucks_core::{
@@ -65,25 +67,68 @@ fn main() {
 
 /// Start the server in the foreground using a new tokio runtime.
 ///
-/// Startup flow (Feature I3):
-/// 1. Spawn a real shell pane using `$SHELL` (from validated config).
-/// 2. Create a Window and Session containing that pane.
-/// 3. Create the actor channel bus.
-/// 4. Spawn the PTY reader task.
-/// 5. Create an in-process client channel pair.
-/// 6. Spawn the session actor task.
-/// 7. Send `NewClient` to the actor so it emits `HandshakeResponse` + `FullFrame`.
-/// 8. Block on the in-process client receiver, logging received frames.
-///    Full rendering (I4/I5) will replace the logging once the alternate screen
-///    and terminal renderer are wired in.
+/// Startup flow (Feature I3 + I4):
+/// 1. Enter raw mode on stdin and write the alternate screen enter sequence.
+/// 2. Install `TerminalGuard` (RAII restore on drop, including panics).
+/// 3. Install panic hook that restores the terminal before printing panic info.
+/// 4. Spawn a real shell pane using `$SHELL` (from validated config).
+/// 5. Create a Window and Session containing that pane.
+/// 6. Create the actor channel bus.
+/// 7. Spawn the PTY reader task.
+/// 8. Create an in-process client channel pair.
+/// 9. Spawn the session actor task.
+/// 10. Send `NewClient` to the actor so it emits `HandshakeResponse` + `FullFrame`.
+/// 11. Block on the in-process client receiver, logging received frames.
+///     Full rendering (I5) will replace the logging once the terminal renderer
+///     is wired in.
 ///
 /// # Resize limitation
 ///
 /// Terminal resize is not handled until Feature I14.  Resizing the host
 /// terminal during branches I3–I13 will cause display corruption.
 fn start_server(server_name: &str, config: &teamucks_core::config::types::ValidatedConfig) {
+    use teamucks::terminal::{
+        enter_raw_mode, install_panic_hook, TerminalGuard, ALTERNATE_SCREEN_ENTER,
+    };
+
     let socket_path = default_socket_path(server_name);
     tracing::info!(socket = %socket_path.display(), "starting server");
+
+    // ── I4: Enter raw mode and alternate screen ───────────────────────────────
+    //
+    // This must happen before any tasks are spawned so that there is exactly
+    // one call to `tcgetattr`/`tcsetattr` and no data races on the terminal fd.
+    //
+    // If stdin is not a TTY (e.g. running in a test harness or a pipeline) we
+    // log a warning and continue without raw mode.  The multiplexer will still
+    // work but interactive input will not be in raw mode.
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let _terminal_guard = match enter_raw_mode(stdin_fd) {
+        Ok(original) => {
+            // Install the panic hook *before* writing the alternate screen
+            // sequence so the hook can restore both the termios and the screen
+            // buffer if a panic occurs during the write.
+            install_panic_hook(stdin_fd, &original);
+
+            // Write the alternate screen enter sequence.  Any write error here
+            // is not fatal — the multiplexer proceeds without the alternate
+            // screen (the user will see garbled output but no crash).
+            if let Err(e) = std::io::stdout().write_all(ALTERNATE_SCREEN_ENTER) {
+                tracing::warn!(error = %e, "failed to write alternate screen enter sequence");
+            }
+            let _ = std::io::stdout().flush();
+
+            tracing::info!("terminal: raw mode active, alternate screen entered");
+            Some(TerminalGuard::new(stdin_fd, original))
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "stdin is not a TTY — running without raw mode (interactive input will not work)"
+            );
+            None
+        }
+    };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime must be constructable");
     rt.block_on(async move {
