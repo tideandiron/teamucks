@@ -21,3 +21,4 @@ anyhow = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 libc = "0.2"
+tempfile = "3"

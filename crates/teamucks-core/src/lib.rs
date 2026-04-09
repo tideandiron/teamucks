@@ -6,4 +6,5 @@
 //! Sessions, windows, panes, layout engine, server daemon, client protocol.
 
 pub mod pty;
+pub mod server;
 pub mod signal;

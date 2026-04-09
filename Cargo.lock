@@ -943,6 +943,7 @@ dependencies = [
  "proptest",
  "teamucks-proto",
  "teamucks-vte",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
