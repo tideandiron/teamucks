@@ -45,6 +45,16 @@ impl Cursor {
     pub fn is_visible(&self) -> bool {
         self.visible
     }
+
+    /// Return `true` if a soft-wrap is pending.
+    ///
+    /// When `wrap_pending` is set, the next printable character written to the
+    /// grid will first advance the cursor to the start of the next line.  Any
+    /// cursor movement sequence clears this flag.
+    #[must_use]
+    pub fn wrap_pending(&self) -> bool {
+        self.wrap_pending
+    }
 }
 
 /// The visible grid of terminal cells.

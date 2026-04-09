@@ -22,6 +22,21 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
+// CSI parameter helpers
+// ---------------------------------------------------------------------------
+
+/// Extract parameter `idx` from a VTE parameter slice, substituting
+/// `default` when the slot is absent or when the value is `0` (which VTE
+/// uses to mean "use the default").
+///
+/// This matches the ECMA-48 rule that a sub-parameter of zero is treated as
+/// the default value for that position.
+#[inline]
+fn param(params: &[u16], idx: usize, default: u16) -> u16 {
+    params.get(idx).copied().filter(|&v| v != 0).unwrap_or(default)
+}
+
+// ---------------------------------------------------------------------------
 // TerminalState
 // ---------------------------------------------------------------------------
 
@@ -265,15 +280,96 @@ impl Performer for TerminalState {
     }
 
     fn csi_dispatch(&mut self, params: &[u16], _intermediates: &[u8], action: u8) {
-        // Only SGR (action b'm') is handled in Feature 4.
-        // Cursor movement, erase, and scroll are handled in Features 5–7.
-        if action == b'm' {
-            self.apply_sgr(params);
+        match action {
+            // SGR — Select Graphic Rendition
+            b'm' => self.apply_sgr(params),
+
+            // CUU — Cursor Up: move up n rows, clamp at row 0.
+            b'A' => {
+                let n = param(params, 0, 1) as usize;
+                let row = self.grid.cursor_row();
+                self.grid.set_cursor(self.grid.cursor_col(), row.saturating_sub(n));
+            }
+
+            // CUD — Cursor Down: move down n rows, clamp at last row.
+            b'B' => {
+                let n = param(params, 0, 1) as usize;
+                let row = self.grid.cursor_row();
+                let new_row = (row + n).min(self.grid.rows() - 1);
+                self.grid.set_cursor(self.grid.cursor_col(), new_row);
+            }
+
+            // CUF — Cursor Forward: move right n cols, clamp at last col.
+            b'C' => {
+                let n = param(params, 0, 1) as usize;
+                let col = self.grid.cursor_col();
+                let new_col = (col + n).min(self.grid.cols() - 1);
+                self.grid.set_cursor(new_col, self.grid.cursor_row());
+            }
+
+            // CUB — Cursor Back: move left n cols, clamp at col 0.
+            b'D' => {
+                let n = param(params, 0, 1) as usize;
+                let col = self.grid.cursor_col();
+                self.grid.set_cursor(col.saturating_sub(n), self.grid.cursor_row());
+            }
+
+            // CNL — Cursor Next Line: move down n rows, reset col to 0.
+            b'E' => {
+                let n = param(params, 0, 1) as usize;
+                let row = self.grid.cursor_row();
+                let new_row = (row + n).min(self.grid.rows() - 1);
+                self.grid.set_cursor(0, new_row);
+            }
+
+            // CPL — Cursor Previous Line: move up n rows, reset col to 0.
+            b'F' => {
+                let n = param(params, 0, 1) as usize;
+                let row = self.grid.cursor_row();
+                self.grid.set_cursor(0, row.saturating_sub(n));
+            }
+
+            // CHA — Cursor Horizontal Absolute: move to col n (1-indexed).
+            b'G' => {
+                let n = param(params, 0, 1) as usize;
+                // Convert 1-indexed to 0-indexed; saturating_sub guards n == 0
+                // (which cannot happen after param() applies default 1).
+                let col = n.saturating_sub(1).min(self.grid.cols() - 1);
+                self.grid.set_cursor(col, self.grid.cursor_row());
+            }
+
+            // CUP — Cursor Position: move to (row, col) (1-indexed each).
+            // HVP (b'f') is identical to CUP.
+            b'H' | b'f' => {
+                let row_1 = param(params, 0, 1) as usize;
+                let col_1 = param(params, 1, 1) as usize;
+                // Convert 1-indexed to 0-indexed, clamp to grid bounds.
+                let row = row_1.saturating_sub(1).min(self.grid.rows() - 1);
+                let col = col_1.saturating_sub(1).min(self.grid.cols() - 1);
+                self.grid.set_cursor(col, row);
+            }
+
+            // VPA — Vertical Position Absolute: move to row n (1-indexed).
+            b'd' => {
+                let n = param(params, 0, 1) as usize;
+                let row = n.saturating_sub(1).min(self.grid.rows() - 1);
+                self.grid.set_cursor(self.grid.cursor_col(), row);
+            }
+
+            // All other CSI sequences are silently ignored until later features.
+            _ => {}
         }
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _action: u8) {
-        // ESC sequences are handled in Feature 5+.
+    fn esc_dispatch(&mut self, _intermediates: &[u8], action: u8) {
+        match action {
+            // DECSC — Save Cursor (ESC 7).
+            b'7' => self.grid.save_cursor(),
+            // DECRC — Restore Cursor (ESC 8).
+            b'8' => self.grid.restore_cursor(),
+            // All other ESC sequences are silently ignored until later features.
+            _ => {}
+        }
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]]) {
