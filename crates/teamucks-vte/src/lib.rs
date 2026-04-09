@@ -21,3 +21,4 @@ pub mod params;
 pub mod parser;
 pub mod row;
 pub mod style;
+pub mod terminal;
