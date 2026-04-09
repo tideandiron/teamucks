@@ -23,6 +23,7 @@
 /// runs of cells with the same style.
 pub mod borders;
 pub mod diff;
+pub mod statusbar;
 
 use teamucks_vte::style::Attr;
 
