@@ -21,6 +21,7 @@ pub mod grid;
 pub mod modes;
 pub mod params;
 pub mod parser;
+pub(crate) mod reflow;
 pub mod row;
 pub mod scrollback;
 pub mod style;
@@ -35,3 +36,6 @@ mod modes_tests;
 
 #[cfg(test)]
 mod tabs_charsets_mouse_tests;
+
+#[cfg(test)]
+mod reflow_tests;

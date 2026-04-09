@@ -294,12 +294,26 @@ impl Grid {
 
     /// Resize the grid to `(cols, rows)`.
     ///
-    /// Existing content is preserved where it fits.  New rows or columns are
-    /// filled with default cells.  Content that falls outside the new
-    /// dimensions is discarded.
+    /// ## Reflow behaviour
     ///
-    /// This is a basic resize — reflow (re-wrapping long lines) is implemented
-    /// in Feature 12.
+    /// When the column count changes **and** the alternate screen is not active,
+    /// soft-wrapped lines in both the visible area and the scrollback buffer are
+    /// joined back into their logical lines and re-wrapped at the new width.
+    /// Hard-wrapped lines (those without a `soft_wrapped` flag on the preceding
+    /// row) are never merged.  The cursor is tracked through the reflow so that
+    /// it remains logically positioned on the same character.
+    ///
+    /// ## Alternate screen
+    ///
+    /// When the alternate screen is active, reflow is skipped entirely.  A basic
+    /// resize (truncate / pad columns and rows) is performed instead.
+    /// Full-screen applications (vim, htop, etc.) redraw themselves in response
+    /// to SIGWINCH, so reflow would corrupt their output.
+    ///
+    /// ## Height-only resize
+    ///
+    /// When `cols` is unchanged, no reflow is performed.  Rows are simply added
+    /// at the bottom (blank) or removed from the bottom.
     ///
     /// # Panics
     ///
@@ -308,14 +322,79 @@ impl Grid {
         assert!(cols > 0, "Grid cols must be > 0");
         assert!(rows > 0, "Grid rows must be > 0");
 
+        let old_cols = self.cols;
+
+        // ------------------------------------------------------------------
+        // Alternate screen: basic resize only (no reflow).
+        // ------------------------------------------------------------------
+        if self.alternate.is_some() {
+            self.basic_resize(cols, rows);
+            return;
+        }
+
+        // ------------------------------------------------------------------
+        // Height-only change: no reflow needed.
+        // ------------------------------------------------------------------
+        if cols == old_cols {
+            self.basic_resize(cols, rows);
+            return;
+        }
+
+        // ------------------------------------------------------------------
+        // Width change on the primary screen: perform reflow.
+        // ------------------------------------------------------------------
+        let (new_sb_rows, new_visible, new_cursor_vis_row, new_cursor_col) = crate::reflow::reflow(
+            &self.scrollback,
+            &self.visible,
+            self.cursor.row,
+            self.cursor.col,
+            cols,
+            rows,
+        );
+
+        // Replace the scrollback buffer contents.
+        // new_sb_rows is ordered oldest-first; ScrollbackBuffer stores
+        // most-recent-first (index 0 = most recent).  Push oldest first so
+        // that the final state has index 0 = most recent.
+        self.scrollback.clear();
+        for row in new_sb_rows {
+            // push() prepends to the front, so we push oldest first which
+            // results in oldest at the back (highest index) — the correct order.
+            self.scrollback.push(row);
+        }
+
+        // Replace visible rows.
+        self.visible = new_visible;
+        self.cols = cols;
+        self.rows = rows;
+
+        // Update cursor.
+        self.cursor.col = new_cursor_col.min(cols - 1);
+        self.cursor.row = new_cursor_vis_row.min(rows - 1);
+        self.cursor.wrap_pending = false;
+
+        // Resize resets the scroll region to the full new screen.
+        self.scroll_region = (0, rows - 1);
+
+        // Resize the tab stops to match the new column count.
+        self.tabs.resize(cols);
+    }
+
+    /// Basic resize: resize each row to `cols`, add/remove rows, clamp cursor.
+    ///
+    /// Used for height-only resizes, alternate-screen resizes, and the
+    /// alternate screen's saved primary state.  Does **not** reflow content.
+    fn basic_resize(&mut self, cols: usize, rows: usize) {
+        let old_rows = self.rows;
+
         // Resize each existing row to the new column count.
         for row in &mut self.visible {
             row.resize(cols);
         }
 
         // Add or remove rows.
-        if rows > self.rows {
-            for _ in self.rows..rows {
+        if rows > old_rows {
+            for _ in old_rows..rows {
                 self.visible.push(Row::new(cols));
             }
         } else {
@@ -337,15 +416,14 @@ impl Grid {
 
         // When the alternate screen is active, also resize the saved primary
         // screen so that exiting the alternate screen restores consistent
-        // dimensions.  No reflow is performed on the saved primary rows —
-        // reflow of the primary screen is Feature 12.
+        // dimensions.  No reflow is performed on the saved primary rows.
         if let Some(alt) = &mut self.alternate {
             for row in &mut alt.visible {
                 row.resize(cols);
             }
             if rows > alt.visible.len() {
-                let old_len = alt.visible.len();
-                for _ in old_len..rows {
+                let old_alt_len = alt.visible.len();
+                for _ in old_alt_len..rows {
                     alt.visible.push(Row::new(cols));
                 }
             } else {
