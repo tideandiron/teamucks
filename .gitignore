@@ -1,0 +1,17 @@
+# Working documents — design specs, decision records, AI context
+.working/
+
+# Build
+/target/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Superpowers brainstorm sessions
+.superpowers/
